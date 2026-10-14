@@ -497,7 +497,7 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
 .modal-pos-badge.st    {{ background: #e3f2fd; color: #1565c0; }}
 .modal-pos-badge.cm    {{ background: #f3e5f5; color: #6a1b9a; }}
 .modal-pos-badge.rb {{ background: #e8f5e9; color: #2e7d32; }}
-.modal-pos-badge.lb {{ background: #e3f2fd; color: #0d47a1; }}
+.modal-pos-badge.lb {{ background: #CFD8DC; color: #263238; }}
 .modal-pos-badge.cb    {{ background: #fafafa; color: #555; border: 1px solid #ddd; }}
 .modal-pos-seq {{ display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }}
 .modal-arrow {{ color: #bbb; font-size: .85rem; }}
