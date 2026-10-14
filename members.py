@@ -2,6 +2,18 @@
 # -*- coding: utf-8 -*-
 # 이번 주 참여 멤버 — 매주 여기만 수정하세요
 
+from enum import Enum
+
+class Mode(Enum):
+    AUTO  = "auto"
+    MATCH = "match"
+    SELF  = "self"
+
+GAME_MODE = Mode.AUTO
+
+FIXED_SAME_TEAM = []
+FIXED_DIFF_TEAM = []
+
 MEMBERS = [
     "김민규",
     "이성학",

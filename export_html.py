@@ -10,8 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from team_maker import (
     MEMBERS, determine_format, get_score, get_grade, get_positions,
-    assign_all_cases, build_rotation, build_external_rotation,
+    assign_all_cases, build_rotation, build_external_rotation, build_small_self,
 )
+try:
+    from members import GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM
+except ImportError:
+    GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM = "auto", [], []
 
 # ── 포지션 좌표 (SVG 300×460 기준) ───────────────────────────
 POS_XY_5 = {"GK":(175,490),"LB":(65,360),"CB":(175,360),"RB":(285,360),"ST":(175,170)}
@@ -60,7 +64,7 @@ def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
             continue
         x, y = pos_xy[pos]
         svg += f'''
-  <g transform="translate({x},{y})">
+  <g transform="translate({x},{y})" class="player-node" data-player="{name}" style="cursor:pointer">
     <circle r="30" fill="{fill}" stroke="{stroke}" stroke-width="2.5"/>
     <text y="-6" text-anchor="middle" fill="{text}" font-size="14" font-weight="700"
       font-family="-apple-system,AppleGothic,sans-serif">{name}</text>
@@ -254,6 +258,9 @@ def build_external_section(ext):
                     player_pos.setdefault(player, []).append(pos)
         for p in bench:
             player_pos[p] = ['벤치']
+        # 매칭은 단일팀이라 team/guest 없이 빈 값
+        player_team  = {p: '' for p in player_pos}
+        player_guest = {}
         for gk, pm in cases:
             pm_full = {"GK": gk, **{pos: next((p for p,v in pm.items() if v==pos), '') for pos in field_pos}}
             svg = svg_court(pm_full, "black", is_6v6, bench if bench else None)
@@ -262,7 +269,9 @@ def build_external_section(ext):
             "bench": ', '.join(bench) if bench else '-',
             "active": active,
             "cases": cases_svg,
-            "player_pos": player_pos,
+            "player_pos":   player_pos,
+            "player_team":  player_team,
+            "player_guest": player_guest,
         })
 
     # 벤치 요약
@@ -283,11 +292,43 @@ def generate_html():
     players = list(MEMBERS)
     n = len(players)
 
-    IS_EXTERNAL = n < 10
+    # 모드 결정
+    # Enum 또는 문자열 모두 지원
+    mode_val = GAME_MODE.value if hasattr(GAME_MODE, 'value') else str(GAME_MODE)
+    IS_SMALL_SELF = False
+    if mode_val == "match":
+        IS_EXTERNAL = True
+        mode_note = ""
+    elif mode_val == "self":
+        if n < 10:
+            IS_EXTERNAL = False
+            IS_SMALL_SELF = True
+            mode_note = f"⚠️ 10명 미만 자체전 ({n}명) — 포메이션 없이 팀 구분만 제공"
+            print(f"ℹ️  소수 자체전 ({n}명): 팀 이름만 표시")
+        else:
+            IS_EXTERNAL = False
+            mode_note = ""
+    else:  # auto
+        IS_EXTERNAL = n < 10
+        mode_note = ""
 
     print("🔍 팀 배정 중...")
 
-    if IS_EXTERNAL:
+    if IS_SMALL_SELF:
+        small = build_small_self(players)
+        team_a = small['team_a']
+        team_b = small['team_b']
+        sa = sum(get_score(p) for p in team_a)
+        sb = sum(get_score(p) for p in team_b)
+        team_size = len(team_a)
+        NUM_GAMES = 0
+        ideal = []
+        all_data = []
+        has_spare = False
+        data_js = "const DATA = [];"
+        ext_data_js = "const EXT = null;"
+        small_js = f"const SMALL = {json.dumps({'team_a': team_a, 'team_b': team_b, 'score_a': sa, 'score_b': sb}, ensure_ascii=False)};"
+    elif IS_EXTERNAL:
         ext = build_external_rotation(players)
         ext_section = build_external_section(ext)
         ideal     = ext['ideal']
@@ -297,13 +338,15 @@ def generate_html():
         ext_data_js = f"const EXT = {json.dumps(ext_section, ensure_ascii=False)};"
         has_spare = False
         data_js   = "const DATA = [];"
+        small_js  = "const SMALL = null;"
     else:
+        small_js = "const SMALL = null;"
         try:
             team_size, _ = determine_format(n)
         except ValueError as e:
             print(f"❌ {e}"); return
 
-        result = build_rotation(players)
+        result = build_rotation(players, fixed_same=FIXED_SAME_TEAM, fixed_diff=FIXED_DIFF_TEAM)
         ideal     = result['ideal']
         NUM_GAMES = result['num_games']
         team_size = result['team_size']
@@ -419,6 +462,13 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
 .bench-tag {{ background: #ffebee; color: #c62828; }}
 .no-bench  {{ background: #e8f5e9; color: #2e7d32; }}
 
+/* 소수 자체전 */
+.small-self-view {{ padding: 16px; display: flex; flex-direction: column; gap: 16px; }}
+.small-team-row {{ background: #fff; border-radius: 12px; padding: 16px 20px;
+                   box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+.small-team-label {{ font-size: 1rem; font-weight: 700; margin-bottom: 10px; }}
+.small-score {{ font-size: .85rem; color: #888; font-weight: 400; margin-left: 6px; }}
+
 /* 선수 모달 */
 .modal-overlay {{ position: fixed; inset: 0; background: rgba(0,0,0,.5);
                   z-index: 1000; display: flex; align-items: center; justify-content: center;
@@ -459,7 +509,6 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
 /* 스페어 스타일 */
 .spare .game-tab.active  {{ color: #555; border-bottom-color: #888; }}
 .spare .bench-banner     {{ background: #4a4a6a; }}
-.spare .case-nav button  {{ background: #4a4a6a; }}
 
 /* 섹션 패널 */
 .section-panel {{ display: none; }}
@@ -471,6 +520,7 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
 <div class="app-header">
   <h1>⚽ 풋살 팀 배정</h1>
   <p>{n}명 참여 · {'외부 매칭 6:6' if IS_EXTERNAL else f'{team_size}:{team_size}'} · {NUM_GAMES}경기</p>
+  {'<p style="color:#ffcc00;font-size:.85rem;margin-top:4px">' + mode_note + '</p>' if mode_note else ''}
   {'<div class="section-tabs"><button class="section-tab active" data-action="section" data-si="0">⚽ 메인팀</button>' + ('<button class="section-tab" data-action="section" data-si="1">🔄 스페어팀</button>' if has_spare else '') + '</div>' if not IS_EXTERNAL else ''}
 </div>
 
@@ -486,13 +536,16 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
   </div>
 </div>
 
-{'<div id="section-0" class="section-panel active"></div>' if not IS_EXTERNAL else ''}
+{'<div id="section-0" class="section-panel active"></div>' if not IS_EXTERNAL and not IS_SMALL_SELF else ''}
+{'<div id="small-view"></div>' if IS_SMALL_SELF else ''}
 {'<div id="section-1" class="section-panel spare"></div>' if has_spare else ''}
 {'<div id="ext-view"></div>' if IS_EXTERNAL else ''}
 
 <script>
 {data_js}
 {ext_data_js}
+{small_js}
+const posMap = {json.dumps({p: (lambda pos: f"{pos[0]}/{pos[1]}" if pos[0] else "")(get_positions(p)) for p in players}, ensure_ascii=False)};
 
 // 섹션별 상태: game(경기), gkCase(GK 케이스), team(0=블랙,1=화이트)
 const state = [
@@ -505,7 +558,21 @@ document.addEventListener('click', function(e) {{
   // 선수 이름 클릭 → 모달
   const playerEl = e.target.closest('[data-player]');
   if (playerEl) {{
-    openPlayerModal(playerEl.dataset.player, playerEl.dataset.si);
+    const si = playerEl.dataset.si;
+    if (si === 'small') {{
+      openSmallModal(playerEl.dataset.player);
+      return;
+    }}
+    // SVG 코트 내 선수 클릭이면 해당 경기/케이스 컨텍스트 전달
+    const courtWrap = e.target.closest('[data-game]');
+    if (courtWrap) {{
+      const csi = courtWrap.dataset.si;
+      const game = parseInt(courtWrap.dataset.game);
+      const caseIdx = parseInt(courtWrap.dataset.case);
+      openPlayerModal(playerEl.dataset.player, csi, game, caseIdx);
+    }} else {{
+      openPlayerModal(playerEl.dataset.player, si);
+    }}
     openModal();
     return;
   }}
@@ -554,8 +621,6 @@ function renderSection(si) {{
   const spareClass = si === 1 ? 'spare' : '';
 
   // 로스터
-  const posMap = {json.dumps({p: (lambda pos: f"{pos[0]}/{pos[1]}" if pos[0] else "미등록")(get_positions(p)) for p in players}, ensure_ascii=False)};
-
   function chipHtml(p) {{
     const pos = posMap[p] || '';
     return '<span class="player-chip clickable" data-player="' + p + '" data-si="' + si + '">'
@@ -600,7 +665,7 @@ function renderSection(si) {{
   // GK 네비게이션
   const gkNav = '<div class="case-nav">'
     + '<button data-action="gk" data-si="' + si + '" data-delta="-1"' + (ci===0 ? ' disabled' : '') + '>‹</button>'
-    + '<span class="case-indicator">GK ' + (ci+1) + ' / ' + cases.length + '</span>'
+    + '<span class="case-indicator">⚽ ' + (ci+1) + '번 GK 포지션 <span style="font-size:.85rem;color:#888;font-weight:400">/ 총 ' + cases.length + '회전</span></span>'
     + '<button data-action="gk" data-si="' + si + '" data-delta="1"' + (ci===cases.length-1 ? ' disabled' : '') + '>›</button>'
     + '</div>';
 
@@ -617,7 +682,7 @@ function renderSection(si) {{
     + teamTabHtml
     + gkNav
     + '<div class="courts-pair">'
-    + '<div class="court-wrap">' + courtSvg + '</div>'
+    + '<div class="court-wrap" data-si="' + si + '" data-game="' + st.game + '" data-case="' + ci + '">' + courtSvg + '</div>'
     + '</div>'
     + '</div>';
 
@@ -648,14 +713,67 @@ function renderSection(si) {{
   panel.innerHTML = html;
 }}
 
+// 소수 자체전 렌더
+function renderSmall() {{
+  const panel = document.getElementById('small-view');
+  if (!panel || !SMALL) return;
+
+  function playerChip(p) {{
+    const pos = posMap[p] || '';
+    return '<span class="player-chip clickable" data-player="' + p + '" data-si="small">'
+      + p + (pos ? '<span class="chip-pos">' + pos + '</span>' : '') + '</span>';
+  }}
+
+  let html = '<div class="small-self-view">'
+    + '<div class="small-team-row">'
+    + '<div class="small-team-label">블랙 👕 <span class="small-score">' + SMALL.score_a + '점</span></div>'
+    + '<div class="chips-wrap">' + SMALL.team_a.map(playerChip).join('') + '</div>'
+    + '</div>'
+    + '<div class="small-team-row">'
+    + '<div class="small-team-label">화이트 👕 <span class="small-score">' + SMALL.score_b + '점</span></div>'
+    + '<div class="chips-wrap">' + SMALL.team_b.map(playerChip).join('') + '</div>'
+    + '</div>'
+    + '</div>';
+
+  panel.innerHTML = html;
+}}
+
+// ── 소수 자체전용 모달 (포지션만) ─────────────────────────────
+function openSmallModal(name) {{
+  const prefPos = posMap[name] || '';
+  const posSeq = prefPos ? prefPos.split('/') : [];
+  const posHtml = posSeq.length
+    ? posSeq.map(function(pos) {{
+        const cls = posColors[pos] || 'cb';
+        return '<span class="modal-pos-badge ' + cls + '">' + pos + '</span>';
+      }}).join('<span class="modal-arrow">→</span>')
+    : '<span style="color:#aaa">포지션 미등록</span>';
+
+  document.getElementById('modal-name').textContent = name;
+  document.getElementById('modal-pos-tag').textContent = prefPos ? '선호: ' + prefPos : '';
+  document.getElementById('modal-body').innerHTML =
+    '<div class="modal-no-bench"><div class="modal-pos-seq">' + posHtml + '</div></div>';
+  openModal();
+}}
+
 // 초기 렌더 — extState 선언 후 아래에서 실행
 
 function renderExternal() {{
   const panel = document.getElementById('ext-view');
   if (!panel) return;
 
+  // 참여 인원 (클릭 가능)
+  let html = '<div class="roster-bar">'
+    + '<div class="roster-row"><span class="roster-label">참여 인원</span><div class="chips-wrap">'
+    + EXT.players.map(function(p) {{
+        const pos = typeof posMap !== 'undefined' && posMap[p] ? posMap[p] : '';
+        return '<span class="player-chip clickable" data-player="' + p + '" data-si="ext">'
+          + p + (pos ? '<span class="chip-pos">' + pos + '</span>' : '') + '</span>';
+      }}).join('')
+    + '</div></div></div>';
+
   // 경기 탭바
-  let html = '<div class="game-tabbar">';
+  html += '<div class="game-tabbar">';
   EXT.games.forEach(function(_, gi) {{
     const act = gi === extState.game ? 'active' : '';
     html += '<button class="game-tab ' + act + '" data-action="ext-game" data-gi="' + gi + '">' + (gi+1) + '경기</button>';
@@ -674,12 +792,12 @@ function renderExternal() {{
   // GK 네비
   const gkNav = '<div class="case-nav">'
     + '<button data-action="ext-gk" data-delta="-1"' + (ci===0?' disabled':'') + '>‹</button>'
-    + '<span class="case-indicator">GK ' + (ci+1) + ' / ' + game.cases.length + '</span>'
+    + '<span class="case-indicator">⚽ ' + (ci+1) + '번 GK 포지션 <span style="font-size:.85rem;color:#888;font-weight:400">/ 총 ' + game.cases.length + '회전</span></span>'
     + '<button data-action="ext-gk" data-delta="1"' + (ci===game.cases.length-1?' disabled':'') + '>›</button>'
     + '</div>';
 
   html += '<div class="game-view">' + benchBanner + gkNav
-    + '<div class="courts-pair"><div class="court-wrap">' + c.svg + '</div></div></div>';
+    + '<div class="courts-pair"><div class="court-wrap" data-si="ext" data-game="' + extState.game + '" data-case="' + ci + '">' + c.svg + '</div></div></div>';
 
   // 벤치 요약
   const hasBench = EXT.bench_summary.some(function(r){{ return r.count > 0; }});
@@ -703,20 +821,23 @@ const extState = {{ game: 0, gkCase: 0 }};
 // ── 선수 모달 ─────────────────────────────────────────────────
 const posColors = {{ GK:'gk', ST:'st', CM:'cm', RB:'rb', LB:'lb', CB:'cb', '벤치':'bench', '-':'none' }};
 
-function openPlayerModal(name, si) {{
+function openPlayerModal(name, si, focusGame, focusCase) {{
   const sec = (si === 'ext') ? EXT : (DATA[si] || null);
   if (!sec) return;
 
   // 포지션 선호 정보
   const prefPos = typeof posMap !== 'undefined' && posMap[name] ? posMap[name] : '';
+  // 코트에서 클릭 시 해당 경기/케이스만 보여줄지 여부
+  const fromCourt = (focusGame !== undefined && focusCase !== undefined);
 
-  function makePosHtml(posSeq) {{
+  function makePosHtml(posSeq, highlightIdx) {{
     const isBench = posSeq.length === 1 && posSeq[0] === '벤치';
     if (isBench) return '<span class="modal-pos-badge bench">벤치</span>';
-    // 3개씩 2줄로 나눔
-    const parts = posSeq.map(function(pos) {{
+    const parts = posSeq.map(function(pos, i) {{
       const cls = posColors[pos] || 'cb';
-      return '<span class="modal-pos-badge ' + cls + '">' + pos + '</span>';
+      const hl = (highlightIdx !== undefined && i === highlightIdx)
+        ? ' style="box-shadow:0 0 0 3px #f5c400;background:#fff3b0!important;color:#333!important"' : '';
+      return '<span class="modal-pos-badge ' + cls + '"' + hl + '>' + pos + '</span>';
     }});
     const row1 = parts.slice(0, 3).join('<span class="modal-arrow">→</span>');
     const row2 = parts.slice(3).join('<span class="modal-arrow">→</span>');
@@ -732,7 +853,20 @@ function openPlayerModal(name, si) {{
 
   let bodyHtml = '';
 
-  if (!hasBench) {{
+  if (fromCourt) {{
+    // 코트에서 클릭 → 해당 경기 + 해당 케이스 하이라이트
+    const g = sec.games[focusGame];
+    const posSeq = g && g.player_pos ? (g.player_pos[name] || ['벤치']) : ['벤치'];
+    const teamTag = g && g.player_team ? (g.player_team[name] || '') : '';
+    const isGuest = g && g.player_guest ? !!g.player_guest[name] : false;
+    const teamLine = teamTag
+      ? '<br><span style="font-size:.8rem;' + (isGuest ? 'color:#e65100;font-weight:700' : 'color:#aaa') + '">(' + teamTag + ')</span>'
+      : '';
+    bodyHtml = '<div class="modal-game-row">'
+      + '<span class="modal-game-num" style="line-height:1.8">' + (focusGame+1) + '경기' + teamLine + '</span>'
+      + '<div class="modal-pos-seq">' + makePosHtml(posSeq, focusCase) + '</div>'
+      + '</div>';
+  }} else if (!hasBench) {{
     // 벤치 없음 → 경기 구분 없이 포지션 순서 한 번만
     const g0 = sec.games[0];
     const posSeq = g0 && g0.player_pos ? (g0.player_pos[name] || ['?']) : ['?'];
@@ -740,7 +874,7 @@ function openPlayerModal(name, si) {{
       + '<div class="modal-pos-seq">' + makePosHtml(posSeq) + '</div>'
       + '</div>';
   }} else {{
-    // 벤치 있음 → 경기별 표시 (연속으로 동일한 포지션이면 묶어서 표시)
+    // 벤치 있음 → 경기별 표시 (연속 동일 포지션 그룹핑)
     const rows = sec.games.map(function(g, gi) {{
       const posSeq  = g.player_pos   ? (g.player_pos[name]   || ['벤치']) : ['벤치'];
       const teamTag = g.player_team  ? (g.player_team[name]  || '') : '';
@@ -748,7 +882,6 @@ function openPlayerModal(name, si) {{
       return {{ game: gi + 1, posSeq, posKey: posSeq.join(','), teamTag, isGuest }};
     }});
 
-    // 연속 동일 포지션 그룹핑
     const groups = [];
     rows.forEach(function(r) {{
       const last = groups[groups.length - 1];
@@ -760,10 +893,12 @@ function openPlayerModal(name, si) {{
     }});
 
     bodyHtml = groups.map(function(grp) {{
-      const teamSuffix = grp.teamTag
-        ? '(<span' + (grp.isGuest ? ' style="color:#e65100;font-weight:700"' : '') + '>' + grp.teamTag + '</span>)'
+      const teamLine = grp.teamTag
+        ? '<br><span style="font-size:.8rem;font-weight:400;' + (grp.isGuest ? 'color:#e65100;font-weight:700' : 'color:#aaa') + '">(' + grp.teamTag + ')</span>'
         : '';
-      const gameLabel = grp.games.map(function(g){{ return g + '경기' + teamSuffix; }}).join('<br>');
+      const gameLabel = grp.games.map(function(g, idx) {{
+        return g + '경기' + (idx === grp.games.length - 1 ? teamLine : '');
+      }}).join('<br>');
       return '<div class="modal-game-row">'
         + '<span class="modal-game-num" style="line-height:1.8">' + gameLabel + '</span>'
         + '<div class="modal-pos-seq">' + makePosHtml(grp.posSeq) + '</div>'
@@ -792,7 +927,9 @@ document.getElementById('player-modal').addEventListener('click', function(e) {{
 }});
 
 // 초기 렌더
-if (typeof EXT !== 'undefined' && EXT) {{
+if (typeof SMALL !== 'undefined' && SMALL) {{
+  renderSmall();
+}} else if (typeof EXT !== 'undefined' && EXT) {{
   renderExternal();
 }} else {{
   renderSection(0);

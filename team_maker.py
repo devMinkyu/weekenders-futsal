@@ -824,53 +824,118 @@ def build_external_rotation(players):
     for p in sorted_by_score[:extra]:
         bench_quota[p] += 1
 
-    # 매 경기 벤치 조합: 균등 + 점수 균형
+    # ── 벤치 스케줄 미리 계획: 각 선수별 벤치 경기를 최대 간격으로 배분 ──
+    # quota=2이면 4경기 간격(1,5 or 2,6 등), quota=1이면 아무 경기
+    from itertools import combinations as _comb
+
     avg_active = sum(get_score(p) for p in players) * TEAM_SIZE / n
-    bench_count = {p: 0 for p in players}
-    last_bench_game = {p: -99 for p in players}
-    rotation = []
+
+    # 선수별 벤치 경기 번호를 미리 결정 (전체 탐색)
+    # bench_per_game명씩 8경기 → 조합 최적화
+    # 간격 최대화 + 점수 균형을 동시에 고려
+
+    # Step1: 각 선수의 벤치 슬롯 간격 최대화 스케줄 생성
+    def gen_spaced_slots(quota, n_games, offset=0):
+        """quota회를 n_games 경기에 최대 간격으로 배치"""
+        if quota == 0:
+            return []
+        gap = n_games // quota
+        return [(offset + i * gap) % n_games for i in range(quota)]
+
+    # 선수별 초기 벤치 경기 후보
+    sorted_players = sorted(players, key=lambda p: get_score(p))
+    player_bench_games = {}
+    for idx, p in enumerate(sorted_players):
+        q = bench_quota[p]
+        # 점수 낮은 순으로 앞 경기부터 배치 (offset으로 분산)
+        offset = idx % (NUM_GAMES // max(q, 1))
+        player_bench_games[p] = gen_spaced_slots(q, NUM_GAMES, offset)
+
+    # Step2: 경기별 bench_per_game 명 정확히 맞도록 조정 + 점수 균형
+    # 각 경기별 후보 선수 집계
+    game_bench_map = {g: [] for g in range(NUM_GAMES)}
+    for p, games_list in player_bench_games.items():
+        for g in games_list:
+            game_bench_map[g].append(p)
+
+    # 경기별 인원이 bench_per_game보다 많으면 점수 균형 기준으로 줄이고,
+    # 부족하면 쿼터 남은 선수 중 간격 가장 큰 선수 추가
+    final_bench = {g: [] for g in range(NUM_GAMES)}
+    bench_used = {p: 0 for p in players}
+    last_bench = {p: -99 for p in players}
 
     for g in range(NUM_GAMES):
-        remaining = NUM_GAMES - g
-        eligible = [p for p in players if bench_count[p] < bench_quota[p]]
-        must = [p for p in eligible
-                if (bench_quota[p] - bench_count[p]) >= math.ceil(remaining / 2)]
+        candidates = [p for p in game_bench_map[g] if bench_used[p] < bench_quota[p]]
 
-        free_slots = bench_per_game - len(must)
-        free_pool = [p for p in eligible if p not in must]
-        # 연속 벤치 후순위
-        free_pool.sort(key=lambda p: (
-            1 if last_bench_game[p] == g - 1 else 0,
-            -(g - last_bench_game[p]),
-        ))
+        # bench_per_game 보다 많으면 점수 균형 기준 최적 조합 선택
+        if len(candidates) > bench_per_game:
+            best, best_err = None, float('inf')
+            for combo in _comb(candidates, bench_per_game):
+                active_score = sum(get_score(p) for p in players if p not in set(combo))
+                err = abs(active_score - avg_active)
+                if err < best_err:
+                    best_err, best = err, list(combo)
+            candidates = best
 
-        best_combo, best_err = None, float('inf')
-        from itertools import combinations as _comb
-        for extra_combo in _comb(free_pool[:min(len(free_pool), 8)], max(0, free_slots)):
-            combo = must + list(extra_combo)
-            if len(combo) != bench_per_game:
-                continue
-            combo_set = set(combo)
-            consec = sum(1 for p in combo if last_bench_game[p] == g - 1)
-            active_score = sum(get_score(p) for p in players if p not in combo_set)
-            err = abs(active_score - avg_active) + consec * 60
-            if err < best_err:
-                best_err, best_combo = err, combo
+        # bench_per_game 보다 적으면 보충
+        while len(candidates) < bench_per_game:
+            remaining_quota = [
+                p for p in players
+                if bench_used[p] < bench_quota[p] and p not in candidates
+            ]
+            if not remaining_quota:
+                break
+            # 마지막 벤치로부터 간격 가장 큰 선수 선택 (연속 방지 + 간격 최대)
+            remaining_quota.sort(key=lambda p: (
+                1 if last_bench[p] == g - 1 else 0,
+                -(g - last_bench[p])
+            ))
+            # 점수 균형도 고려해서 최적 1명 추가
+            best_add, best_err = None, float('inf')
+            cur_set = set(candidates)
+            for p in remaining_quota[:6]:
+                active_score = sum(get_score(q) for q in players if q not in cur_set and q != p)
+                err = abs(active_score - avg_active) + (60 if last_bench[p] == g - 1 else 0)
+                if err < best_err:
+                    best_err, best_add = err, p
+            if best_add:
+                candidates.append(best_add)
+            else:
+                break
 
-        if best_combo is None:
-            best_combo = (must + free_pool)[:bench_per_game]
+        for p in candidates:
+            bench_used[p] += 1
+            last_bench[p] = g
+        final_bench[g] = candidates
 
-        for p in best_combo:
-            bench_count[p] += 1
-            last_bench_game[p] = g
-
-        active = [p for p in players if p not in set(best_combo)]
-        rotation.append((active, best_combo, sum(get_score(p) for p in active)))
+    rotation = []
+    for g in range(NUM_GAMES):
+        bench = final_bench[g]
+        active = [p for p in players if p not in set(bench)]
+        rotation.append((active, bench, sum(get_score(p) for p in active)))
 
     return {'mode': 'external', 'n': n, 'ideal': ideal, 'players': players, 'rotation': rotation}
 
 
-def build_rotation(players):
+def build_small_self(players, tries=3000):
+    """
+    8명 이하 소수 자체전: 등급 기반 균등 두 팀 분배. 포메이션 없이 이름만.
+    반환: {'mode': 'small_self', 'team_a': [...], 'team_b': [...]}
+    """
+    n = len(players)
+    half = n // 2
+    best_a, best_b, best_diff = None, None, float('inf')
+    for _ in range(tries):
+        s = players[:]
+        random.shuffle(s)
+        a, b = s[:half], s[half:]
+        diff = abs(sum(get_score(p) for p in a) - sum(get_score(p) for p in b))
+        if diff < best_diff:
+            best_diff, best_a, best_b = diff, a[:], b[:]
+    return {'mode': 'small_self', 'team_a': best_a, 'team_b': best_b}
+
+
+def build_rotation(players, fixed_same=None, fixed_diff=None):
     """
     참여자 리스트를 받아 메인팀/스페어팀 로테이션 데이터를 반환.
     반환: {
@@ -884,12 +949,36 @@ def build_rotation(players):
     ideal = IDEAL_POSITIONS_6 if team_size >= 6 else IDEAL_POSITIONS_5
     NUM_GAMES = 8
 
-    def find_best(size, tries=3000):
+    def find_best(size, tries=3000, fixed_same=None, fixed_diff=None):
+        """
+        fixed_same: 같은 팀으로 묶을 선수 리스트 (a팀 또는 b팀 어디든 같이)
+        fixed_diff: 다른 팀으로 분리할 (p1, p2) 튜플 리스트
+        """
+        fixed_same = fixed_same or []
+        fixed_diff = fixed_diff or []
         best_a, best_b, best_diff = None, None, float('inf')
         for _ in range(tries):
             s = players[:]
             random.shuffle(s)
             a, b = s[:size], s[size:]
+            set_a, set_b = set(a), set(b)
+
+            # FIXED_SAME_TEAM: 모두 같은 팀에 있어야 함
+            if fixed_same:
+                in_a = [p for p in fixed_same if p in set_a]
+                in_b = [p for p in fixed_same if p in set_b]
+                if in_a and in_b:  # 양 팀에 분산 → 버림
+                    continue
+
+            # FIXED_DIFF_TEAM: 각 쌍이 다른 팀에 있어야 함
+            skip = False
+            for p1, p2 in fixed_diff:
+                if (p1 in set_a and p2 in set_a) or (p1 in set_b and p2 in set_b):
+                    skip = True
+                    break
+            if skip:
+                continue
+
             if n % 2 == 1:
                 avg = sum(get_score(p) for p in a) * team_size / size
                 diff = abs(avg - sum(get_score(p) for p in b))
@@ -923,18 +1012,21 @@ def build_rotation(players):
             rot_b.append((act_b, bench_b, sum(get_score(p) for p in act_b)))
         return rot_a, rot_b
 
+    fs = fixed_same or []
+    fd = fixed_diff or []
+
     if n % 2 == 1:
         a_size = (n + 1) // 2
-        base_a, base_b = find_best(a_size)
+        base_a, base_b = find_best(a_size, fixed_same=fs, fixed_diff=fd)
         rot_a, rot_b = make_odd_rotation(base_a, base_b)
         spare = None
     else:
         size = n // 2
         bench = size - team_size
-        base_a, base_b = find_best(size)
+        base_a, base_b = find_best(size, fixed_same=fs, fixed_diff=fd)
         rot_a = make_fixed_team_rotation(base_a, NUM_GAMES, bench)
         rot_b = make_fixed_team_rotation(base_b, NUM_GAMES, bench)
-        sp_a, sp_b = find_best(size)
+        sp_a, sp_b = find_best(size, fixed_same=fs, fixed_diff=fd)
         sp_rot_a = make_fixed_team_rotation(sp_a, NUM_GAMES, bench)
         sp_rot_b = make_fixed_team_rotation(sp_b, NUM_GAMES, bench)
         spare = {'base_a': sp_a, 'base_b': sp_b, 'rot_a': sp_rot_a, 'rot_b': sp_rot_b}
