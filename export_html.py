@@ -288,13 +288,20 @@ def build_external_section(ext):
 
 
 # ── HTML 생성 ─────────────────────────────────────────────────
-def generate_html():
-    players = list(MEMBERS)
+def generate_html(players=None, game_mode=None, open_browser=True):
+    """
+    players: 참석자 리스트 (None이면 members.py의 MEMBERS 사용)
+    game_mode: "auto"/"match"/"self" 또는 Mode Enum (None이면 members.py의 GAME_MODE 사용)
+    open_browser: 생성 후 브라우저 자동 오픈 여부
+    반환: 생성된 index.html 절대경로
+    """
+    players = list(players) if players is not None else list(MEMBERS)
     n = len(players)
 
     # 모드 결정
+    _mode = game_mode if game_mode is not None else GAME_MODE
     # Enum 또는 문자열 모두 지원
-    mode_val = GAME_MODE.value if hasattr(GAME_MODE, 'value') else str(GAME_MODE)
+    mode_val = _mode.value if hasattr(_mode, 'value') else str(_mode)
     IS_SMALL_SELF = False
     if mode_val == "match":
         IS_EXTERNAL = True
@@ -958,7 +965,9 @@ document.addEventListener('click', function(e) {{
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"✅ 저장 완료: {out_path}")
-    webbrowser.open(f"file://{out_path}")
+    if open_browser:
+        webbrowser.open(f"file://{out_path}")
+    return out_path
 
 if __name__ == "__main__":
     generate_html()
