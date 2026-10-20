@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from team_maker import (
     MEMBERS, determine_format, get_score, get_grade, get_positions,
     assign_all_cases, build_rotation, build_external_rotation, build_small_self,
+    resolve_names, resolve_name, AmbiguousNameError,
 )
 try:
     from members import GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM
@@ -72,21 +73,7 @@ def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
       font-family="-apple-system,AppleGothic,sans-serif">{pos}</text>
   </g>'''
 
-    # 벤치 선수 — 오른쪽 아래 코너에 원형으로 표시
-    if bench_players:
-        bx_start = W - 36
-        by_start = H - 36
-        for i, bp in enumerate(bench_players):
-            bx = bx_start - i * 62
-            svg += f'''
-  <g transform="translate({bx},{by_start})">
-    <circle r="28" fill="rgba(0,0,0,0.6)" stroke="rgba(255,255,255,0.7)" stroke-width="2" stroke-dasharray="5,3"/>
-    <text y="-6" text-anchor="middle" fill="#fff" font-size="13" font-weight="700"
-      font-family="-apple-system,AppleGothic,sans-serif">{bp}</text>
-    <text y="11" text-anchor="middle" fill="rgba(255,255,255,0.75)" font-size="10"
-      font-family="-apple-system,AppleGothic,sans-serif">벤치</text>
-  </g>'''
-
+    # 벤치는 SVG 안이 아니라 코트 바깥(HTML)에 표시 → bench_players 는 여기서 무시
     svg += '\n</svg>'
     return svg
 
@@ -187,6 +174,8 @@ def build_section_data(team_a, team_b, rot_a, rot_b, ideal, num_games):
         games.append({
             "bench_a": ', '.join(bench_a) if bench_a else '-',
             "bench_b": ', '.join(bench_b) if bench_b else '-',
+            "bench_a_list": list(bench_a),
+            "bench_b_list": list(bench_b),
             "cases": cases_svg,
             "player_pos": {**player_pos_a, **player_pos_b},
             "player_team": {**team_label_a, **team_label_b},
@@ -267,6 +256,7 @@ def build_external_section(ext):
             cases_svg.append({"svg": svg, "gk": gk})
         games.append({
             "bench": ', '.join(bench) if bench else '-',
+            "bench_list": list(bench),
             "active": active,
             "cases": cases_svg,
             "player_pos":   player_pos,
@@ -296,7 +286,19 @@ def generate_html(players=None, game_mode=None, open_browser=True):
     반환: 생성된 index.html 절대경로
     """
     players = list(players) if players is not None else list(MEMBERS)
+    # 참석자 이름 보정 (민규 → 김민규). 모호하면 AmbiguousNameError 발생 → 중단
+    players = resolve_names(players)
     n = len(players)
+
+    # 팀 고정 조건(FIXED)의 이름도 참석자 기준으로 보정 (현욱 → 박현욱)
+    # 참석자 명단 안에서만 매칭 — 이번 경기에 없는 선수는 그대로 두고 build_rotation 이 무시
+    def _resolve_pairs(pairs):
+        out = []
+        for pair in pairs:
+            out.append(tuple(resolve_name(x, players) for x in pair))
+        return out
+    fixed_same = _resolve_pairs(FIXED_SAME_TEAM)
+    fixed_diff = _resolve_pairs(FIXED_DIFF_TEAM)
 
     # 모드 결정
     _mode = game_mode if game_mode is not None else GAME_MODE
@@ -353,7 +355,7 @@ def generate_html(players=None, game_mode=None, open_browser=True):
         except ValueError as e:
             print(f"❌ {e}"); return
 
-        result = build_rotation(players, fixed_same=FIXED_SAME_TEAM, fixed_diff=FIXED_DIFF_TEAM)
+        result = build_rotation(players, fixed_same=fixed_same, fixed_diff=fixed_diff)
         ideal     = result['ideal']
         NUM_GAMES = result['num_games']
         team_size = result['team_size']
@@ -451,8 +453,16 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
 .case-nav button:disabled {{ background: #ccc; cursor: default; }}
 .case-indicator {{ font-size: 1.1rem; font-weight: 700; color: #333;
                    min-width: 90px; text-align: center; }}
-.courts-pair {{ display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }}
+.courts-pair {{ display: flex; gap: 14px; justify-content: center; align-items: flex-start; flex-wrap: nowrap; }}
 .court-wrap  {{ display: flex; flex-direction: column; align-items: center; gap: 5px; }}
+
+/* 코트 오른쪽 벤치 선수 (초록 밖, 세로 나열) */
+.bench-side {{ display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }}
+.bench-chip {{ display: flex; flex-direction: column; align-items: center; justify-content: center;
+               width: 56px; height: 56px; border-radius: 50%;
+               background: #2c2c2c; color: #fff; font-size: .85rem; font-weight: 700;
+               border: 2px dashed rgba(255,255,255,0.5); }}
+.bench-chip-sub {{ font-size: .65rem; font-weight: 400; opacity: 0.7; margin-top: 1px; }}
 .court-label {{ font-size: 1rem; font-weight: 700; }}
 
 /* 벤치 요약 */
@@ -679,6 +689,7 @@ function renderSection(si) {{
   // 선택된 팀 코트
   const courtSvg = st.team === 0 ? c.black : c.white;
   const courtLabel = st.team === 0 ? '블랙 👕' : '화이트 👕';
+  const benchList = st.team === 0 ? (game.bench_a_list || []) : (game.bench_b_list || []);
 
   const benchBanner = hasBench
     ? '<div class="bench-banner">🖤 벤치: <span class="bench-name">' + game.bench_a + '</span><span class="bench-sep">│</span>🤍 벤치: <span class="bench-name">' + game.bench_b + '</span></div>'
@@ -690,6 +701,7 @@ function renderSection(si) {{
     + gkNav
     + '<div class="courts-pair">'
     + '<div class="court-wrap" data-si="' + si + '" data-game="' + st.game + '" data-case="' + ci + '">' + courtSvg + '</div>'
+    + benchSideHtml(benchList)
     + '</div>'
     + '</div>';
 
@@ -804,7 +816,9 @@ function renderExternal() {{
     + '</div>';
 
   html += '<div class="game-view">' + benchBanner + gkNav
-    + '<div class="courts-pair"><div class="court-wrap" data-si="ext" data-game="' + extState.game + '" data-case="' + ci + '">' + c.svg + '</div></div></div>';
+    + '<div class="courts-pair"><div class="court-wrap" data-si="ext" data-game="' + extState.game + '" data-case="' + ci + '">' + c.svg + '</div>'
+    + benchSideHtml(game.bench_list || [])
+    + '</div></div>';
 
   // 벤치 요약
   const hasBench = EXT.bench_summary.some(function(r){{ return r.count > 0; }});
@@ -827,6 +841,15 @@ const extState = {{ game: 0, gkCase: 0 }};
 
 // ── 선수 모달 ─────────────────────────────────────────────────
 const posColors = {{ GK:'gk', ST:'st', CM:'cm', RB:'rb', LB:'lb', CB:'cb', '벤치':'bench', '-':'none' }};
+
+// 코트 오른쪽에 세로로 붙는 벤치 선수 목록
+function benchSideHtml(benchList) {{
+  if (!benchList || benchList.length === 0) return '';
+  const chips = benchList.map(function(bp) {{
+    return '<div class="bench-chip">' + bp + '<span class="bench-chip-sub">벤치</span></div>';
+  }}).join('');
+  return '<div class="bench-side">' + chips + '</div>';
+}}
 
 function openPlayerModal(name, si, focusGame, focusCase) {{
   const sec = (si === 'ext') ? EXT : (DATA[si] || null);

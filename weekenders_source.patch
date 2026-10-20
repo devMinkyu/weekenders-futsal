@@ -1,0 +1,774 @@
+diff --git a/export_html.py b/export_html.py
+index 3432e8e..8cb285c 100644
+--- a/export_html.py
++++ b/export_html.py
+@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ from team_maker import (
+     MEMBERS, determine_format, get_score, get_grade, get_positions,
+     assign_all_cases, build_rotation, build_external_rotation, build_small_self,
++    resolve_names, resolve_name, AmbiguousNameError,
+ )
+ try:
+     from members import GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM
+@@ -72,21 +73,7 @@ def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
+       font-family="-apple-system,AppleGothic,sans-serif">{pos}</text>
+   </g>'''
+ 
+-    # 벤치 선수 — 오른쪽 아래 코너에 원형으로 표시
+-    if bench_players:
+-        bx_start = W - 36
+-        by_start = H - 36
+-        for i, bp in enumerate(bench_players):
+-            bx = bx_start - i * 62
+-            svg += f'''
+-  <g transform="translate({bx},{by_start})">
+-    <circle r="28" fill="rgba(0,0,0,0.6)" stroke="rgba(255,255,255,0.7)" stroke-width="2" stroke-dasharray="5,3"/>
+-    <text y="-6" text-anchor="middle" fill="#fff" font-size="13" font-weight="700"
+-      font-family="-apple-system,AppleGothic,sans-serif">{bp}</text>
+-    <text y="11" text-anchor="middle" fill="rgba(255,255,255,0.75)" font-size="10"
+-      font-family="-apple-system,AppleGothic,sans-serif">벤치</text>
+-  </g>'''
+-
++    # 벤치는 SVG 안이 아니라 코트 바깥(HTML)에 표시 → bench_players 는 여기서 무시
+     svg += '\n</svg>'
+     return svg
+ 
+@@ -187,6 +174,8 @@ def build_section_data(team_a, team_b, rot_a, rot_b, ideal, num_games):
+         games.append({
+             "bench_a": ', '.join(bench_a) if bench_a else '-',
+             "bench_b": ', '.join(bench_b) if bench_b else '-',
++            "bench_a_list": list(bench_a),
++            "bench_b_list": list(bench_b),
+             "cases": cases_svg,
+             "player_pos": {**player_pos_a, **player_pos_b},
+             "player_team": {**team_label_a, **team_label_b},
+@@ -267,6 +256,7 @@ def build_external_section(ext):
+             cases_svg.append({"svg": svg, "gk": gk})
+         games.append({
+             "bench": ', '.join(bench) if bench else '-',
++            "bench_list": list(bench),
+             "active": active,
+             "cases": cases_svg,
+             "player_pos":   player_pos,
+@@ -296,8 +286,20 @@ def generate_html(players=None, game_mode=None, open_browser=True):
+     반환: 생성된 index.html 절대경로
+     """
+     players = list(players) if players is not None else list(MEMBERS)
++    # 참석자 이름 보정 (민규 → 김민규). 모호하면 AmbiguousNameError 발생 → 중단
++    players = resolve_names(players)
+     n = len(players)
+ 
++    # 팀 고정 조건(FIXED)의 이름도 참석자 기준으로 보정 (현욱 → 박현욱)
++    # 참석자 명단 안에서만 매칭 — 이번 경기에 없는 선수는 그대로 두고 build_rotation 이 무시
++    def _resolve_pairs(pairs):
++        out = []
++        for pair in pairs:
++            out.append(tuple(resolve_name(x, players) for x in pair))
++        return out
++    fixed_same = _resolve_pairs(FIXED_SAME_TEAM)
++    fixed_diff = _resolve_pairs(FIXED_DIFF_TEAM)
++
+     # 모드 결정
+     _mode = game_mode if game_mode is not None else GAME_MODE
+     # Enum 또는 문자열 모두 지원
+@@ -353,7 +355,7 @@ def generate_html(players=None, game_mode=None, open_browser=True):
+         except ValueError as e:
+             print(f"❌ {e}"); return
+ 
+-        result = build_rotation(players, fixed_same=FIXED_SAME_TEAM, fixed_diff=FIXED_DIFF_TEAM)
++        result = build_rotation(players, fixed_same=fixed_same, fixed_diff=fixed_diff)
+         ideal     = result['ideal']
+         NUM_GAMES = result['num_games']
+         team_size = result['team_size']
+@@ -451,8 +453,16 @@ body {{ font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans
+ .case-nav button:disabled {{ background: #ccc; cursor: default; }}
+ .case-indicator {{ font-size: 1.1rem; font-weight: 700; color: #333;
+                    min-width: 90px; text-align: center; }}
+-.courts-pair {{ display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }}
++.courts-pair {{ display: flex; gap: 14px; justify-content: center; align-items: flex-start; flex-wrap: nowrap; }}
+ .court-wrap  {{ display: flex; flex-direction: column; align-items: center; gap: 5px; }}
++
++/* 코트 오른쪽 벤치 선수 (초록 밖, 세로 나열) */
++.bench-side {{ display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }}
++.bench-chip {{ display: flex; flex-direction: column; align-items: center; justify-content: center;
++               width: 56px; height: 56px; border-radius: 50%;
++               background: #2c2c2c; color: #fff; font-size: .85rem; font-weight: 700;
++               border: 2px dashed rgba(255,255,255,0.5); }}
++.bench-chip-sub {{ font-size: .65rem; font-weight: 400; opacity: 0.7; margin-top: 1px; }}
+ .court-label {{ font-size: 1rem; font-weight: 700; }}
+ 
+ /* 벤치 요약 */
+@@ -679,6 +689,7 @@ function renderSection(si) {{
+   // 선택된 팀 코트
+   const courtSvg = st.team === 0 ? c.black : c.white;
+   const courtLabel = st.team === 0 ? '블랙 👕' : '화이트 👕';
++  const benchList = st.team === 0 ? (game.bench_a_list || []) : (game.bench_b_list || []);
+ 
+   const benchBanner = hasBench
+     ? '<div class="bench-banner">🖤 벤치: <span class="bench-name">' + game.bench_a + '</span><span class="bench-sep">│</span>🤍 벤치: <span class="bench-name">' + game.bench_b + '</span></div>'
+@@ -690,6 +701,7 @@ function renderSection(si) {{
+     + gkNav
+     + '<div class="courts-pair">'
+     + '<div class="court-wrap" data-si="' + si + '" data-game="' + st.game + '" data-case="' + ci + '">' + courtSvg + '</div>'
++    + benchSideHtml(benchList)
+     + '</div>'
+     + '</div>';
+ 
+@@ -804,7 +816,9 @@ function renderExternal() {{
+     + '</div>';
+ 
+   html += '<div class="game-view">' + benchBanner + gkNav
+-    + '<div class="courts-pair"><div class="court-wrap" data-si="ext" data-game="' + extState.game + '" data-case="' + ci + '">' + c.svg + '</div></div></div>';
++    + '<div class="courts-pair"><div class="court-wrap" data-si="ext" data-game="' + extState.game + '" data-case="' + ci + '">' + c.svg + '</div>'
++    + benchSideHtml(game.bench_list || [])
++    + '</div></div>';
+ 
+   // 벤치 요약
+   const hasBench = EXT.bench_summary.some(function(r){{ return r.count > 0; }});
+@@ -828,6 +842,15 @@ const extState = {{ game: 0, gkCase: 0 }};
+ // ── 선수 모달 ─────────────────────────────────────────────────
+ const posColors = {{ GK:'gk', ST:'st', CM:'cm', RB:'rb', LB:'lb', CB:'cb', '벤치':'bench', '-':'none' }};
+ 
++// 코트 오른쪽에 세로로 붙는 벤치 선수 목록
++function benchSideHtml(benchList) {{
++  if (!benchList || benchList.length === 0) return '';
++  const chips = benchList.map(function(bp) {{
++    return '<div class="bench-chip">' + bp + '<span class="bench-chip-sub">벤치</span></div>';
++  }}).join('');
++  return '<div class="bench-side">' + chips + '</div>';
++}}
++
+ function openPlayerModal(name, si, focusGame, focusCase) {{
+   const sec = (si === 'ext') ? EXT : (DATA[si] || null);
+   if (!sec) return;
+diff --git a/grades.json b/grades.json
+new file mode 100644
+index 0000000..c2b6e19
+--- /dev/null
++++ b/grades.json
+@@ -0,0 +1,194 @@
++{
++  "박현욱": {
++    "패스": "A",
++    "리턴": "A",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "A",
++    "골결정력": "A"
++  },
++  "박현성": {
++    "패스": "A",
++    "리턴": "A",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "A",
++    "골결정력": "A"
++  },
++  "서호준": {
++    "패스": "B",
++    "리턴": "A",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "A",
++    "골결정력": "A"
++  },
++  "이성학": {
++    "패스": "B",
++    "리턴": "A",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "B",
++    "골결정력": "A"
++  },
++  "김동규": {
++    "패스": "A",
++    "리턴": "B",
++    "수비": "B",
++    "드리블": "A",
++    "볼소유": "A",
++    "골결정력": "A"
++  },
++  "김의빈": {
++    "패스": "B",
++    "리턴": "B",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "A",
++    "골결정력": "B"
++  },
++  "이요셉": {
++    "패스": "B",
++    "리턴": "A",
++    "수비": "A",
++    "드리블": "B",
++    "볼소유": "A",
++    "골결정력": "B"
++  },
++  "김재혁": {
++    "패스": "B",
++    "리턴": "B",
++    "수비": "A",
++    "드리블": "B",
++    "볼소유": "B",
++    "골결정력": "A"
++  },
++  "김동수": {
++    "패스": "B",
++    "리턴": "A",
++    "수비": "C",
++    "드리블": "B",
++    "볼소유": "A",
++    "골결정력": "B"
++  },
++  "윤상일": {
++    "패스": "C",
++    "리턴": "C",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "B",
++    "골결정력": "B"
++  },
++  "김민규": {
++    "패스": "B",
++    "리턴": "B",
++    "수비": "B",
++    "드리블": "B",
++    "볼소유": "B",
++    "골결정력": "B"
++  },
++  "양승수": {
++    "패스": "C",
++    "리턴": "C",
++    "수비": "A",
++    "드리블": "A",
++    "볼소유": "B",
++    "골결정력": "B"
++  },
++  "김기항": {
++    "패스": "B",
++    "리턴": "B",
++    "수비": "C",
++    "드리블": "C",
++    "볼소유": "B",
++    "골결정력": "A"
++  },
++  "김현준": {
++    "패스": "B",
++    "리턴": "C",
++    "수비": "B",
++    "드리블": "B",
++    "볼소유": "B",
++    "골결정력": "B"
++  },
++  "김태균": {
++    "패스": "B",
++    "리턴": "C",
++    "수비": "C",
++    "드리블": "B",
++    "볼소유": "D",
++    "골결정력": "B"
++  },
++  "박상익": {
++    "패스": "C",
++    "리턴": "C",
++    "수비": "B",
++    "드리블": "C",
++    "볼소유": "C",
++    "골결정력": "B"
++  },
++  "오영웅": {
++    "패스": "C",
++    "리턴": "C",
++    "수비": "B",
++    "드리블": "C",
++    "볼소유": "D",
++    "골결정력": "B"
++  },
++  "김동호": {
++    "패스": "C",
++    "리턴": "D",
++    "수비": "C",
++    "드리블": "B",
++    "볼소유": "C",
++    "골결정력": "B"
++  },
++  "정재교": {
++    "패스": "B",
++    "리턴": "C",
++    "수비": "C",
++    "드리블": "D",
++    "볼소유": "C",
++    "골결정력": "B"
++  },
++  "김동욱": {
++    "패스": "C",
++    "리턴": "D",
++    "수비": "C",
++    "드리블": "B",
++    "볼소유": "C",
++    "골결정력": "C"
++  },
++  "한석범": {
++    "패스": "C",
++    "리턴": "C",
++    "수비": "B",
++    "드리블": "D",
++    "볼소유": "D",
++    "골결정력": "B"
++  },
++  "정준영": {
++    "패스": "C",
++    "리턴": "D",
++    "수비": "C",
++    "드리블": "C",
++    "볼소유": "D",
++    "골결정력": "B"
++  },
++  "박찬형": {
++    "패스": "C",
++    "리턴": "D",
++    "수비": "B",
++    "드리블": "D",
++    "볼소유": "C",
++    "골결정력": "D"
++  },
++  "안희수": {
++    "패스": "D",
++    "리턴": "D",
++    "수비": "D",
++    "드리블": "D",
++    "볼소유": "D",
++    "골결정력": "D"
++  }
++}
+\ No newline at end of file
+diff --git a/grades.py b/grades.py
+index d1908a0..1e89245 100644
+--- a/grades.py
++++ b/grades.py
+@@ -1,77 +1,71 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+-# 선수별 등급 데이터 — 주기적으로 이 파일을 수정하세요
+-# 최종등급: A+ / A / B+ / B / C / D
+-# 용병은 자동으로 B 등급 처리됩니다
++# 선수별 세부 능력치 — 데이터는 grades.json 에 있습니다.
++#
++# ※ 등급 데이터 수정은 grades.json 을 고치세요 (봇도 json 만 수정).
++#    이 파일(.py)은 점수 계산 로직·검증만 담당합니다.
++#
++# 각 항목 등급: A / B / C / D   (A=4, B=3, C=2, D=1)
++# 합산점수는 ABILITY_KEYS 의 항목들을 더해 자동 계산됩니다.
++# 용병(미등록 선수)·값이 빠진 항목은 자동으로 B 등급 처리됩니다.
++#
++# ── 항목을 추가/변경하려면? ──────────────────────────────────────
++#   ABILITY_KEYS 에 항목명을 추가/수정하면 됩니다.
++#   grades.json 의 각 선수에 해당 항목을 넣으면 반영, 안 넣으면 기본값(B).
+ 
+-PLAYER_GRADES = {
+-    # A+
+-    "박현욱": "A+",   # 합산 32
+-    # A
+-    "서호준": "A",    # 합산 23
+-    "이성학": "A",    # 합산 22
+-    "김동규": "A",    # 합산 22
+-    # B+
+-    "김의빈": "B+",   # 합산 21
+-    "이요셉": "B+",   # 합산 21
+-    "김재혁": "B+",   # 합산 20
+-    # B
+-    "김동수": "B",    # 합산 19
+-    "윤상일": "B",    # 합산 18
+-    "김민규": "B",    # 합산 18
+-    "양승수": "B",    # 합산 18
+-    "김기항": "B",    # 합산 18
+-    "김현준": "B",    # 합산 17
+-    "오영웅": "B",    # 합산 15
+-    # C
+-    "박상익": "C",    # 합산 14
+-    "김태균": "C",    # 합산 14
+-    "김동호": "C",    # 합산 13
+-    "정재교": "C",    # 합산 13
+-    "정준영": "C",    # 합산 12
+-    "김동욱": "C",    # 합산 12
+-    "한석범": "C",    # 합산 10
+-    "박찬형": "C",    # 합산 10
+-    # D
+-    "안희수": "D",    # 합산 6
+-}
++import json
++from pathlib import Path
+ 
+-# 선수별 합산 점수 (직접 입력한 값 우선 사용)
+-# 등록되지 않은 선수는 등급별 평균 점수로 자동 처리
+-PLAYER_SCORES = {
+-    "박현욱": 32,
+-    "서호준": 23,
+-    "이성학": 22,
+-    "김동규": 22,
+-    "김의빈": 21,
+-    "이요셉": 21,
+-    "김재혁": 20,
+-    "김동수": 19,
+-    "윤상일": 18,
+-    "김민규": 18,
+-    "양승수": 18,
+-    "김기항": 18,
+-    "김현준": 17,
+-    "오영웅": 15,
+-    "박상익": 14,
+-    "김태균": 14,
+-    "김동호": 13,
+-    "정재교": 13,
+-    "정준영": 12,
+-    "김동욱": 12,
+-    "한석범": 10,
+-    "박찬형": 10,
+-    "안희수": 6,
+-}
++# 평가 항목 (이 리스트가 점수 계산의 기준)
++ABILITY_KEYS = ["패스", "리턴", "수비", "드리블", "볼소유", "골결정력"]
+ 
+-# 등급별 평균 점수 (PLAYER_SCORES에 없는 선수의 fallback)
+-GRADE_SCORE = {
+-    "A+": 32,
+-    "A":  22,
+-    "B+": 20,
+-    "B":  17,
+-    "C":  12,
+-    "D":  6,
+-}
++# 등급 → 점수
++ABILITY_SCORE = {"A": 4, "B": 3, "C": 2, "D": 1}
+ 
+-MERCENARY_GRADE = "B"  # 용병 기본 등급
++MERCENARY_GRADE = "B"  # 미등록 선수·빠진 항목 기본 등급
++
++GRADES_FILE = Path(__file__).parent / "grades.json"
++
++
++def _load_abilities() -> dict:
++    try:
++        return json.loads(GRADES_FILE.read_text(encoding="utf-8"))
++    except FileNotFoundError:
++        return {}
++    except json.JSONDecodeError as e:
++        raise ValueError(f"grades.json 형식 오류: {e}")
++
++
++# 선수별 세부 등급 {선수명: {항목명: 등급}}
++PLAYER_ABILITIES = _load_abilities()
++
++
++def player_score(name: str) -> int:
++    """ABILITY_KEYS 기준으로 세부 등급을 합산해 점수를 계산.
++    미등록 선수나 빠진 항목은 MERCENARY_GRADE(B) 로 간주."""
++    abilities = PLAYER_ABILITIES.get(name, {})
++    default = ABILITY_SCORE[MERCENARY_GRADE]
++    return sum(ABILITY_SCORE.get(abilities.get(key), default) for key in ABILITY_KEYS)
++
++
++def _validate() -> None:
++    """로드 시 자동 검증: 오타난 등급·존재하지 않는 항목이 있으면 즉시 에러."""
++    valid_grades = set(ABILITY_SCORE)       # {"A","B","C","D"}
++    valid_keys = set(ABILITY_KEYS)
++    errors = []
++    for name, ab in PLAYER_ABILITIES.items():
++        if not isinstance(ab, dict):
++            errors.append(f"'{name}' 능력치는 딕셔너리여야 해요: {ab!r}")
++            continue
++        for key, grade in ab.items():
++            if key not in valid_keys:
++                errors.append(f"'{name}' 알 수 없는 항목 '{key}' (ABILITY_KEYS: {ABILITY_KEYS})")
++            if grade not in valid_grades:
++                errors.append(f"'{name}' '{key}' 잘못된 등급 '{grade}' (가능: A/B/C/D)")
++    if MERCENARY_GRADE not in valid_grades:
++        errors.append(f"MERCENARY_GRADE '{MERCENARY_GRADE}' 가 A/B/C/D 중에 없어요")
++    if errors:
++        raise ValueError("grades.json 등급 데이터 오류:\n  - " + "\n  - ".join(errors))
++
++
++_validate()  # import 되는 순간 검증
+diff --git a/members.py b/members.py
+index ba0cc09..1fcf1a1 100644
+--- a/members.py
++++ b/members.py
+@@ -11,20 +11,20 @@ class Mode(Enum):
+ 
+ GAME_MODE = Mode.AUTO
+ 
++# 같은 팀으로 묶기: 각 쌍(튜플) 선수들이 무조건 같은 팀  예) [("김민규", "이성학")]
+ FIXED_SAME_TEAM = []
+-FIXED_DIFF_TEAM = []
++# 다른 팀으로 분리: 각 쌍(튜플)의 두 선수가 무조건 다른 팀  예) [("박현욱", "박현성")]
++FIXED_DIFF_TEAM = [("박현욱", "박현성")]
+ 
+ MEMBERS = [
+     "김민규",
+     "이성학",
+-    "김기항",
++    "김동호",
+     "김태균",
++    "김현준",
+     "박상익",
+-    "오영웅",
++    "박현성",
++    "박현욱",
++    "영웅",
+     "정준영",
+-    "김동호",
+-    "김현준",
+-    "박찬형",
+-    "김재혁",
+-    "한석범"
+ ]
+diff --git a/positions.json b/positions.json
+new file mode 100644
+index 0000000..f817898
+--- /dev/null
++++ b/positions.json
+@@ -0,0 +1,78 @@
++{
++  "박현욱": [
++    "ST",
++    "CM"
++  ],
++  "박현성": [
++    "ST",
++    "RB"
++  ],
++  "서호준": [
++    "ST",
++    "CM"
++  ],
++  "이성학": [
++    "LB",
++    "CB"
++  ],
++  "김의빈": [
++    "CM",
++    "LB"
++  ],
++  "이요셉": [
++    "CM",
++    "CB"
++  ],
++  "김재혁": [
++    "RB",
++    "ST"
++  ],
++  "윤상일": [
++    "CM",
++    "ST"
++  ],
++  "김민규": [
++    "ST",
++    "CM"
++  ],
++  "양승수": [
++    "RB",
++    "ST"
++  ],
++  "김기항": [
++    "ST",
++    "LB"
++  ],
++  "김태균": [
++    "RB",
++    "ST"
++  ],
++  "박상익": [
++    "RB",
++    "CM"
++  ],
++  "오영웅": [
++    "CM",
++    "ST"
++  ],
++  "김동호": [
++    "RB",
++    "CM"
++  ],
++  "정재교": [
++    "CM",
++    "RB"
++  ],
++  "한석범": [
++    "ST",
++    "CB"
++  ],
++  "정준영": [
++    "RB",
++    "CB"
++  ],
++  "박찬형": [
++    "LB",
++    "RB"
++  ]
++}
+\ No newline at end of file
+diff --git a/positions.py b/positions.py
+index c566b2d..e7c5cd4 100644
+--- a/positions.py
++++ b/positions.py
+@@ -1,36 +1,35 @@
+ #!/usr/bin/env python3
+ # -*- coding: utf-8 -*-
+-# 선수별 포지션 데이터 — 포지션 변경 시 이 파일을 수정하세요
++# 선수별 포지션 — 데이터는 positions.json 에 있습니다.
++#
++# ※ 포지션 데이터 수정은 positions.json 을 고치세요 (봇도 json 만 수정).
++#    이 파일(.py)은 포지션 구성 상수만 담당합니다.
+ #
+ # 포지션 종류:
+-#   ST  : 공격수
+-#   CM  : 중앙 미드필더
+-#   RB  : 오른쪽 수비
+-#   LB  : 왼쪽 수비
+-#   CB  : 중앙 수비수
++#   ST : 공격수 / CM : 중앙 미드필더 / RB : 오른쪽 수비 / LB : 왼쪽 수비 / CB : 중앙 수비수
+ #
+-# 형식: "선수명": ("1순위", "2순위")
++# json 형식: "선수명": ["1순위", "2순위"]
+ # ※ 같은 팀 내 1순위 포지션이 겹칠 경우, 등급이 높은 선수가 2순위로 이동합니다
+ 
+-PLAYER_POSITIONS = {
+-    "김민규":  ("ST", "CM"),   # 1순위: ST  / 2순위: CM
+-    "김재혁":  ("RB", "ST"),   # 1순위: RB  / 2순위: ST
+-    "이성학":  ("LB", "CB"),   # 1순위: LB  / 2순위: CB
+-    "서호준":  ("ST", "CM"),   # 1순위: ST  / 2순위: CM
+-    "윤상일":  ("CM", "ST"),   # 1순위: CM  / 2순위: ST
+-    "박상익":  ("RB", "CM"),   # 1순위: RB  / 2순위: CM
+-    "김태균":  ("RB", "ST"),   # 1순위: RB  / 2순위: ST
+-    "이요셉":  ("CM", "CB"),   # 1순위: CM  / 2순위: CB
+-    "김기항":  ("ST", "LB"),   # 1순위: ST  / 2순위: LB
+-    "정재교":  ("CM", "RB"),   # 1순위: CM  / 2순위: RB
+-    "정준영":  ("RB", "CB"),   # 1순위: RB  / 2순위: CB
+-    "오영웅":  ("CM", "ST"),   # 1순위: CM  / 2순위: ST
+-    "양승수":  ("RB", "ST"),   # 1순위: RB  / 2순위: ST
+-    "김의빈":  ("CM", "LB"),   # 1순위: CM  / 2순위: LB
+-    "박찬형":  ("LB", "RB"),   # 1순위: LB  / 2순위: RB
+-    "김동호":  ("RB", "CM"),   # 1순위: RB  / 2순위: CM
+-    "한석범":  ("ST", "CB"),   # 1순위: ST  / 2순위: CB
+-}
++import json
++from pathlib import Path
++
++POSITIONS_FILE = Path(__file__).parent / "positions.json"
++
++
++def _load_positions() -> dict:
++    try:
++        raw = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
++    except FileNotFoundError:
++        return {}
++    except json.JSONDecodeError as e:
++        raise ValueError(f"positions.json 형식 오류: {e}")
++    # JSON 리스트 → 튜플 (기존 코드 호환)
++    return {name: tuple(pos) for name, pos in raw.items()}
++
++
++# 선수별 포지션 {선수명: ("1순위", "2순위")}
++PLAYER_POSITIONS = _load_positions()
+ 
+ # 인원수별 이상적인 필드 포지션 구성 (GK 제외)
+ # 5인제: GK 1명 + 필드 4명 → CM 없이 운영
+diff --git a/team_maker.py b/team_maker.py
+index 1b9b928..e35440e 100644
+--- a/team_maker.py
++++ b/team_maker.py
+@@ -5,7 +5,7 @@ import itertools
+ import random
+ from collections import defaultdict
+ 
+-from grades import PLAYER_GRADES, GRADE_SCORE, PLAYER_SCORES, MERCENARY_GRADE
++from grades import PLAYER_ABILITIES, MERCENARY_GRADE, player_score, ABILITY_KEYS
+ from members import MEMBERS
+ from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEAL_POSITIONS_6
+ 
+@@ -15,20 +15,70 @@ from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEA
+ # ─────────────────────────────────────────
+ 
+ def is_mercenary(name):
+-    return name not in PLAYER_GRADES
++    return name not in PLAYER_ABILITIES
++
++
++class AmbiguousNameError(Exception):
++    """이름(성 제외)만으로 매칭 시 후보가 2명 이상이라 특정 불가."""
++    def __init__(self, input_name, candidates):
++        self.input_name = input_name
++        self.candidates = candidates
++        super().__init__(
++            f"'{input_name}' 은(는) 여러 명과 일치해요: {', '.join(candidates)}\n"
++            f"→ 성을 붙여서 정확히 입력해주세요."
++        )
++
++
++def resolve_name(input_name, registered_names=None):
++    """
++    참석자 이름을 등록명으로 보정한다.
++      1) 완전일치 → 그대로
++      2) 등록명이 입력값으로 끝남(endswith) 매칭 1명 → 그 등록명
++      3) 매칭 2명 이상 → AmbiguousNameError (모호)
++      4) 매칭 0명 → 입력값 그대로 (용병/미등록 처리)
++    """
++    if registered_names is None:
++        registered_names = list(PLAYER_ABILITIES.keys())
++    name = input_name.strip()
++    if name in registered_names:          # 1) 완전일치 우선
++        return name
++    # 2~3) 성 제외 매칭: 등록명이 입력값으로 끝나는 경우
++    matches = [r for r in registered_names if r.endswith(name) and r != name]
++    if len(matches) == 1:
++        return matches[0]
++    if len(matches) >= 2:
++        raise AmbiguousNameError(name, matches)
++    return name                            # 4) 매칭 없음 → 그대로(미등록)
++
++
++def resolve_names(input_names, registered_names=None):
++    """참석자 리스트 전체를 보정. 모호한 이름이 하나라도 있으면 즉시 중단."""
++    if registered_names is None:
++        registered_names = list(PLAYER_ABILITIES.keys())
++    return [resolve_name(n, registered_names) for n in input_names]
++
++
++# 합산점수 → 종합 등급 (표시용). 만점 = 항목수 × 4 (A)
++_MAX_SCORE = len(ABILITY_KEYS) * 4   # 6항목 × 4 = 24
+ 
+ 
+ def get_grade(name):
++    """합산점수를 비율로 환산해 A/B/C/D 종합 등급(표시용)으로 반환."""
+     if is_mercenary(name):
+         return MERCENARY_GRADE
+-    return PLAYER_GRADES[name]
++    ratio = get_score(name) / _MAX_SCORE
++    if ratio >= 0.80:
++        return "A"
++    if ratio >= 0.60:
++        return "B"
++    if ratio >= 0.40:
++        return "C"
++    return "D"
+ 
+ 
+ def get_score(name):
+-    # 합산 점수 직접 등록된 경우 우선 사용, 없으면 등급별 평균
+-    if name in PLAYER_SCORES:
+-        return PLAYER_SCORES[name]
+-    return GRADE_SCORE[get_grade(name)]
++    """세부 능력치 등급을 합산한 점수 (grades.player_score)."""
++    return player_score(name)
+ 
+ 
+ def team_score(team):
+@@ -315,7 +365,7 @@ def generate_schedule(players, num_sets, team_size, bench_schedule, attempts=500
+ # 출력
+ # ─────────────────────────────────────────
+ 
+-GRADE_EMOJI = {"A+": "🔴", "A": "🟠", "B+": "🟡", "B": "🟢", "C": "⚪", "D": "⬛"}
++GRADE_EMOJI = {"A": "🟠", "B": "🟢", "C": "⚪", "D": "⬛"}
+ 
+ 
+ def fmt_player(name):

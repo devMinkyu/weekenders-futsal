@@ -1,0 +1,62 @@
+From 8dc4c21ebc80621b398026a157f03125e40621f6 Mon Sep 17 00:00:00 2001
+From: "min.q" <min.q@kakaobank.com>
+Date: Mon, 19 Oct 2026 15:55:39 +0900
+Subject: [PATCH] =?UTF-8?q?generate=5Fhtml=EC=97=90=20=EC=B0=B8=EC=84=9D?=
+ =?UTF-8?q?=EC=9E=90=C2=B7=EB=AA=A8=EB=93=9C=20=EC=A3=BC=EC=9E=85=20?=
+ =?UTF-8?q?=ED=8C=8C=EB=9D=BC=EB=AF=B8=ED=84=B0=20=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- generate_html(players, game_mode, open_browser) 인자 지원
+- 인자 없으면 members.py 명단 사용 (기존 동작 유지)
+- 봇 등 외부에서 참석자 리스트 직접 주입 가능
+- 생성된 index.html 경로 반환, 브라우저 자동 오픈 옵션화
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ export_html.py | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/export_html.py b/export_html.py
+index 4783a99..3432e8e 100644
+--- a/export_html.py
++++ b/export_html.py
+@@ -288,13 +288,20 @@ def build_external_section(ext):
+ 
+ 
+ # ── HTML 생성 ─────────────────────────────────────────────────
+-def generate_html():
+-    players = list(MEMBERS)
++def generate_html(players=None, game_mode=None, open_browser=True):
++    """
++    players: 참석자 리스트 (None이면 members.py의 MEMBERS 사용)
++    game_mode: "auto"/"match"/"self" 또는 Mode Enum (None이면 members.py의 GAME_MODE 사용)
++    open_browser: 생성 후 브라우저 자동 오픈 여부
++    반환: 생성된 index.html 절대경로
++    """
++    players = list(players) if players is not None else list(MEMBERS)
+     n = len(players)
+ 
+     # 모드 결정
++    _mode = game_mode if game_mode is not None else GAME_MODE
+     # Enum 또는 문자열 모두 지원
+-    mode_val = GAME_MODE.value if hasattr(GAME_MODE, 'value') else str(GAME_MODE)
++    mode_val = _mode.value if hasattr(_mode, 'value') else str(_mode)
+     IS_SMALL_SELF = False
+     if mode_val == "match":
+         IS_EXTERNAL = True
+@@ -958,7 +965,9 @@ document.addEventListener('click', function(e) {{
+     with open(out_path, "w", encoding="utf-8") as f:
+         f.write(html)
+     print(f"✅ 저장 완료: {out_path}")
+-    webbrowser.open(f"file://{out_path}")
++    if open_browser:
++        webbrowser.open(f"file://{out_path}")
++    return out_path
+ 
+ if __name__ == "__main__":
+     generate_html()
+-- 
+2.39.5 (Apple Git-154)
+

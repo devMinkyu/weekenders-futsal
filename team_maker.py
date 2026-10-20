@@ -5,7 +5,7 @@ import itertools
 import random
 from collections import defaultdict
 
-from grades import PLAYER_GRADES, GRADE_SCORE, PLAYER_SCORES, MERCENARY_GRADE
+from grades import PLAYER_ABILITIES, MERCENARY_GRADE, player_score, ABILITY_KEYS
 from members import MEMBERS
 from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEAL_POSITIONS_6
 
@@ -15,20 +15,70 @@ from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEA
 # ─────────────────────────────────────────
 
 def is_mercenary(name):
-    return name not in PLAYER_GRADES
+    return name not in PLAYER_ABILITIES
+
+
+class AmbiguousNameError(Exception):
+    """이름(성 제외)만으로 매칭 시 후보가 2명 이상이라 특정 불가."""
+    def __init__(self, input_name, candidates):
+        self.input_name = input_name
+        self.candidates = candidates
+        super().__init__(
+            f"'{input_name}' 은(는) 여러 명과 일치해요: {', '.join(candidates)}\n"
+            f"→ 성을 붙여서 정확히 입력해주세요."
+        )
+
+
+def resolve_name(input_name, registered_names=None):
+    """
+    참석자 이름을 등록명으로 보정한다.
+      1) 완전일치 → 그대로
+      2) 등록명이 입력값으로 끝남(endswith) 매칭 1명 → 그 등록명
+      3) 매칭 2명 이상 → AmbiguousNameError (모호)
+      4) 매칭 0명 → 입력값 그대로 (용병/미등록 처리)
+    """
+    if registered_names is None:
+        registered_names = list(PLAYER_ABILITIES.keys())
+    name = input_name.strip()
+    if name in registered_names:          # 1) 완전일치 우선
+        return name
+    # 2~3) 성 제외 매칭: 등록명이 입력값으로 끝나는 경우
+    matches = [r for r in registered_names if r.endswith(name) and r != name]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) >= 2:
+        raise AmbiguousNameError(name, matches)
+    return name                            # 4) 매칭 없음 → 그대로(미등록)
+
+
+def resolve_names(input_names, registered_names=None):
+    """참석자 리스트 전체를 보정. 모호한 이름이 하나라도 있으면 즉시 중단."""
+    if registered_names is None:
+        registered_names = list(PLAYER_ABILITIES.keys())
+    return [resolve_name(n, registered_names) for n in input_names]
+
+
+# 합산점수 → 종합 등급 (표시용). 만점 = 항목수 × 4 (A)
+_MAX_SCORE = len(ABILITY_KEYS) * 4   # 6항목 × 4 = 24
 
 
 def get_grade(name):
+    """합산점수를 비율로 환산해 A/B/C/D 종합 등급(표시용)으로 반환."""
     if is_mercenary(name):
         return MERCENARY_GRADE
-    return PLAYER_GRADES[name]
+    ratio = get_score(name) / _MAX_SCORE
+    if ratio >= 0.80:
+        return "A"
+    if ratio >= 0.60:
+        return "B"
+    if ratio >= 0.40:
+        return "C"
+    return "D"
 
 
 def get_score(name):
-    # 합산 점수 직접 등록된 경우 우선 사용, 없으면 등급별 평균
-    if name in PLAYER_SCORES:
-        return PLAYER_SCORES[name]
-    return GRADE_SCORE[get_grade(name)]
+    """세부 능력치 등급을 합산한 점수 (grades.player_score)."""
+    return player_score(name)
 
 
 def team_score(team):
@@ -315,7 +365,7 @@ def generate_schedule(players, num_sets, team_size, bench_schedule, attempts=500
 # 출력
 # ─────────────────────────────────────────
 
-GRADE_EMOJI = {"A+": "🔴", "A": "🟠", "B+": "🟡", "B": "🟢", "C": "⚪", "D": "⬛"}
+GRADE_EMOJI = {"A": "🟠", "B": "🟢", "C": "⚪", "D": "⬛"}
 
 
 def fmt_player(name):
