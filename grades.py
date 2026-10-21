@@ -27,7 +27,7 @@ MERCENARY_GRADE = "B"  # 미등록 선수·빠진 항목 기본 등급
 # 선출(선수 출신): 능력치 등급과 무관하게 합산점수 고정
 SEONCHUL_SCORE = 40
 SEONCHUL_PLAYERS = [
-    # "홍길동",
+    "김재중",
 ]
 
 GRADES_FILE = Path(__file__).parent / "grades.json"
