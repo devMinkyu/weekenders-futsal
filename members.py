@@ -20,7 +20,6 @@ FIXED_SAME_TEAM = []
 FIXED_DIFF_TEAM = [("박현욱", "박현성")]
 
 MEMBERS = [
-    "김기항1",
     "김민규",
     "이성학",
     "정재교",
