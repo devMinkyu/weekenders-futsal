@@ -1014,24 +1014,22 @@ def make_odd_rotation(base_a, base_b, team_size, num_games=8):
 
     큰팀 A(블랙) = ⌈n/2⌉, 작은팀 B(화이트) = ⌊n/2⌋  (A = B+1)
       · 기본경기: A가 a_base=|A|-T, B가 b_base=|B|-T 명 벤치
-      · 교차경기: A가 (a_base-1) 벤치 + 1명을 화이트로 임대,
-                  B가 (b_base+1) 벤치  → 양 팀 모두 필드 T명
-    교차경기 수 c는 양 팀의 1인당 휴식 횟수가 최대한 같아지도록 자동 선택한다.
+      · 임대경기: 직전 경기에 벤치였던 블랙 선수 1명이 복귀하며 화이트로 임시 투입.
+                  이때 A는 (a_base-1) 벤치, B는 (b_base+1) 벤치 → 양 팀 모두 필드 T명
+    임대 선수는 "직전 경기에 쉬었던 사람"이며 임대경기 다음엔 블랙으로 복귀한다.
+    임대경기 수 c는 양 팀의 1인당 휴식 횟수가 최대한 같아지도록 자동 선택한다.
 
     반환: (rot_a, rot_b)  각각 [(active, bench, active_score), ...] num_games개
     """
     A, B = list(base_a), list(base_b)
     nA, nB = len(A), len(B)
-    a_base = nA - team_size
-    b_base = nB - team_size
-    # A = B+1 이므로 a_base = b_base+1 이 보장됨 (방어적으로 음수만 차단)
-    a_base = max(a_base, 0)
-    b_base = max(b_base, 0)
+    a_base = max(nA - team_size, 0)
+    b_base = max(nB - team_size, 0)
 
-    # ── 교차경기 수 c 결정: A/B 1인당 휴식 균형 ──
+    # ── 임대경기 수 c 결정: A/B 1인당 휴식 균형 ──
     #   A_per = (num_games*a_base - c)/nA,  B_per = (num_games*b_base + c)/nB
     best_c, best_gap = 0, float('inf')
-    c_max = num_games if a_base >= 1 else 0   # 교차경기는 A가 1명 이상 벤치 가능해야 함
+    c_max = num_games if a_base >= 1 else 0   # 임대경기는 블랙이 1명 이상 벤치 가능해야 함
     for c in range(0, c_max + 1):
         a_per = (num_games * a_base - c) / nA
         b_per = (num_games * b_base + c) / nB
@@ -1040,66 +1038,79 @@ def make_odd_rotation(base_a, base_b, team_size, num_games=8):
             best_gap, best_c = gap, c
     c = best_c
 
-    # ── 경기 타입 시퀀스: 교차경기를 전체에 고르게 분산 ──
-    is_cross = [False] * num_games
-    if c > 0:
-        step = num_games / c
-        for k in range(c):
-            idx = int(round(k * step + step / 2)) % num_games
-            while is_cross[idx]:
-                idx = (idx + 1) % num_games
-            is_cross[idx] = True
+    # ── 임대경기 배치: 0경기 제외 + 인접 회피 (직전 경기 블랙 벤치가 복귀자 공급원) ──
+    is_loan = [False] * num_games
+    slots = [i for i in range(1, num_games, 2)] + [i for i in range(2, num_games, 2)]
+    for i in slots[:c]:
+        is_loan[i] = True
 
-    a_benches = [a_base - 1 if t else a_base for t in is_cross]
-    b_benches = [b_base + 1 if t else b_base for t in is_cross]
-
-    def pick_team_bench(team, bench_counts):
-        """팀 내 경기별 벤치 선정: quota 균등, 연속 회피, 낮은 점수 우선 벤치."""
-        total = sum(bench_counts)
+    # ── 팀별 전체 휴식 quota (낮은 점수 우선 휴식) ──
+    def quota_for(team, total):
         m = len(team)
         base_q, extra = divmod(total, m)
-        order = sorted(team, key=get_score)      # 점수 낮을수록 벤치 많이
+        order = sorted(team, key=get_score)
         quota = {p: base_q for p in team}
         for p in order[:extra]:
             quota[p] += 1
-        used = {p: 0 for p in team}
-        last = {p: -99 for p in team}
-        picks = []
-        for g, k in enumerate(bench_counts):
-            remaining = len(bench_counts) - g
-            must = [p for p in team
-                    if 0 < quota[p] - used[p] >= remaining]
-            pool = [p for p in team if used[p] < quota[p] and p not in must]
-            pool.sort(key=lambda p: (1 if last[p] == g - 1 else 0,
-                                     -(g - last[p]), get_score(p)))
-            bench = list(must)
-            for p in pool:
-                if len(bench) >= k:
-                    break
-                bench.append(p)
-            bench = bench[:k]
-            for p in bench:
-                used[p] += 1
-                last[p] = g
-            picks.append(bench)
-        return picks
+        return quota
+    qa = quota_for(A, num_games * a_base - c)
+    qb = quota_for(B, num_games * b_base + c)
 
-    a_bench_games = pick_team_bench(A, a_benches)
-    b_bench_games = pick_team_bench(B, b_benches)
+    used_a = {p: 0 for p in A}
+    used_b = {p: 0 for p in B}
+    last_a = {p: -99 for p in A}
+    last_b = {p: -99 for p in B}
 
+    def pick(team, k, used, last, quota, g, remaining, exclude=()):
+        """경기별 벤치 선정: quota 균등, 연속 회피, 낮은 점수 우선."""
+        ex = set(exclude)
+        must = [p for p in team if p not in ex
+                and 0 < quota[p] - used[p] >= remaining]
+        pool = [p for p in team if p not in ex
+                and used[p] < quota[p] and p not in must]
+        pool.sort(key=lambda p: (1 if last[p] == g - 1 else 0,
+                                 -(g - last[p]), get_score(p)))
+        bench = list(must)
+        for p in pool:
+            if len(bench) >= k:
+                break
+            bench.append(p)
+        return bench[:k]
+
+    prev_bench_a = []
     rot_a, rot_b = [], []
     for g in range(num_games):
-        bench_a = a_bench_games[g]
-        bench_b = b_bench_games[g]
-        a_field = [p for p in A if p not in set(bench_a)]
-        b_field = [p for p in B if p not in set(bench_b)]
-        if is_cross[g] and len(a_field) > team_size:
-            # 블랙 필드에서 1명을 화이트로 임대 — 양 팀 점수차가 최소가 되게 선택
-            target = (sum(get_score(p) for p in a_field)
-                      - sum(get_score(p) for p in b_field)) / 2
-            mover = min(a_field, key=lambda p: abs(get_score(p) - target))
-            a_field = [p for p in a_field if p != mover]
-            b_field = b_field + [mover]
+        remaining = num_games - g
+        loan_cands = list(prev_bench_a) if is_loan[g] else []
+
+        def build(loan):
+            # 블랙 벤치 (임대 선수는 '뛰는' 것이므로 벤치 후보에서 제외)
+            bench_a = pick(A, a_base - (1 if loan else 0), used_a, last_a, qa,
+                           g, remaining, exclude=(loan,) if loan else ())
+            bench_b = pick(B, b_base + (1 if loan else 0), used_b, last_b, qb,
+                           g, remaining)
+            a_field = [p for p in A if p not in set(bench_a) and p != loan]
+            b_field = [p for p in B if p not in set(bench_b)]
+            if loan:
+                b_field = b_field + [loan]
+            gap = abs(sum(get_score(p) for p in a_field)
+                      - sum(get_score(p) for p in b_field))
+            return bench_a, bench_b, a_field, b_field, gap
+
+        if loan_cands:
+            # 직전 경기에 쉰 선수들 중, 양 팀 점수차가 최소가 되는 복귀자를 임대
+            bench_a, bench_b, a_field, b_field, _ = min(
+                (build(l) for l in loan_cands), key=lambda r: r[4])
+        else:
+            bench_a, bench_b, a_field, b_field, _ = build(None)
+
+        for p in bench_a:
+            used_a[p] += 1
+            last_a[p] = g
+        for p in bench_b:
+            used_b[p] += 1
+            last_b[p] = g
+        prev_bench_a = list(bench_a)
         rot_a.append((a_field, bench_a, sum(get_score(p) for p in a_field)))
         rot_b.append((b_field, bench_b, sum(get_score(p) for p in b_field)))
     return rot_a, rot_b
