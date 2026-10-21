@@ -17,7 +17,7 @@ SEVEN_V_SEVEN = False
 # 같은 팀으로 묶기: 각 쌍(튜플) 선수들이 무조건 같은 팀  예) [("김민규", "이성학")]
 FIXED_SAME_TEAM = []
 # 다른 팀으로 분리: 각 쌍(튜플)의 두 선수가 무조건 다른 팀  예) [("박현욱", "박현성")]
-FIXED_DIFF_TEAM = []
+FIXED_DIFF_TEAM = [("박현욱", "박현성")]
 
 MEMBERS = [
     "김민규",
