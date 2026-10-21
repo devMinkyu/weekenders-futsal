@@ -586,8 +586,12 @@ def print_game_schedule(team_a, team_b, rot_a, rot_b, ideal, num_games, label="�
         print(f"  {g+1}경기   블랙 👕 벤치: {bench_a_str} ({sa}점)   │   화이트 👕 벤치: {bench_b_str} ({sb}점)")
         print(f"  {'─' * (W-2)}")
 
-        active_gk_order_a = [p for p in gk_order_a if p in set(active_a)]
-        active_gk_order_b = [p for p in gk_order_b if p in set(active_b)]
+        # 베이스 팀 순서를 유지하되, 교차경기 임대 선수(상대 베이스 소속)도 빠뜨리지 않음
+        set_a, set_b = set(active_a), set(active_b)
+        active_gk_order_a = ([p for p in gk_order_a if p in set_a]
+                             + [p for p in active_a if p not in set(gk_order_a)])
+        active_gk_order_b = ([p for p in gk_order_b if p in set_b]
+                             + [p for p in active_b if p not in set(gk_order_b)])
 
         cases_a = assign_all_cases(active_gk_order_a, ideal)
         cases_b = assign_all_cases(active_gk_order_b, ideal)
@@ -1005,6 +1009,102 @@ def build_small_self(players, tries=3000):
     return {'mode': 'small_self', 'team_a': best_a, 'team_b': best_b}
 
 
+def make_odd_rotation(base_a, base_b, team_size, num_games=8):
+    """홀수 인원 교차 로테이션 (매 경기 team_size:team_size 유지).
+
+    큰팀 A(블랙) = ⌈n/2⌉, 작은팀 B(화이트) = ⌊n/2⌋  (A = B+1)
+      · 기본경기: A가 a_base=|A|-T, B가 b_base=|B|-T 명 벤치
+      · 교차경기: A가 (a_base-1) 벤치 + 1명을 화이트로 임대,
+                  B가 (b_base+1) 벤치  → 양 팀 모두 필드 T명
+    교차경기 수 c는 양 팀의 1인당 휴식 횟수가 최대한 같아지도록 자동 선택한다.
+
+    반환: (rot_a, rot_b)  각각 [(active, bench, active_score), ...] num_games개
+    """
+    A, B = list(base_a), list(base_b)
+    nA, nB = len(A), len(B)
+    a_base = nA - team_size
+    b_base = nB - team_size
+    # A = B+1 이므로 a_base = b_base+1 이 보장됨 (방어적으로 음수만 차단)
+    a_base = max(a_base, 0)
+    b_base = max(b_base, 0)
+
+    # ── 교차경기 수 c 결정: A/B 1인당 휴식 균형 ──
+    #   A_per = (num_games*a_base - c)/nA,  B_per = (num_games*b_base + c)/nB
+    best_c, best_gap = 0, float('inf')
+    c_max = num_games if a_base >= 1 else 0   # 교차경기는 A가 1명 이상 벤치 가능해야 함
+    for c in range(0, c_max + 1):
+        a_per = (num_games * a_base - c) / nA
+        b_per = (num_games * b_base + c) / nB
+        gap = abs(a_per - b_per)
+        if gap < best_gap:
+            best_gap, best_c = gap, c
+    c = best_c
+
+    # ── 경기 타입 시퀀스: 교차경기를 전체에 고르게 분산 ──
+    is_cross = [False] * num_games
+    if c > 0:
+        step = num_games / c
+        for k in range(c):
+            idx = int(round(k * step + step / 2)) % num_games
+            while is_cross[idx]:
+                idx = (idx + 1) % num_games
+            is_cross[idx] = True
+
+    a_benches = [a_base - 1 if t else a_base for t in is_cross]
+    b_benches = [b_base + 1 if t else b_base for t in is_cross]
+
+    def pick_team_bench(team, bench_counts):
+        """팀 내 경기별 벤치 선정: quota 균등, 연속 회피, 낮은 점수 우선 벤치."""
+        total = sum(bench_counts)
+        m = len(team)
+        base_q, extra = divmod(total, m)
+        order = sorted(team, key=get_score)      # 점수 낮을수록 벤치 많이
+        quota = {p: base_q for p in team}
+        for p in order[:extra]:
+            quota[p] += 1
+        used = {p: 0 for p in team}
+        last = {p: -99 for p in team}
+        picks = []
+        for g, k in enumerate(bench_counts):
+            remaining = len(bench_counts) - g
+            must = [p for p in team
+                    if 0 < quota[p] - used[p] >= remaining]
+            pool = [p for p in team if used[p] < quota[p] and p not in must]
+            pool.sort(key=lambda p: (1 if last[p] == g - 1 else 0,
+                                     -(g - last[p]), get_score(p)))
+            bench = list(must)
+            for p in pool:
+                if len(bench) >= k:
+                    break
+                bench.append(p)
+            bench = bench[:k]
+            for p in bench:
+                used[p] += 1
+                last[p] = g
+            picks.append(bench)
+        return picks
+
+    a_bench_games = pick_team_bench(A, a_benches)
+    b_bench_games = pick_team_bench(B, b_benches)
+
+    rot_a, rot_b = [], []
+    for g in range(num_games):
+        bench_a = a_bench_games[g]
+        bench_b = b_bench_games[g]
+        a_field = [p for p in A if p not in set(bench_a)]
+        b_field = [p for p in B if p not in set(bench_b)]
+        if is_cross[g] and len(a_field) > team_size:
+            # 블랙 필드에서 1명을 화이트로 임대 — 양 팀 점수차가 최소가 되게 선택
+            target = (sum(get_score(p) for p in a_field)
+                      - sum(get_score(p) for p in b_field)) / 2
+            mover = min(a_field, key=lambda p: abs(get_score(p) - target))
+            a_field = [p for p in a_field if p != mover]
+            b_field = b_field + [mover]
+        rot_a.append((a_field, bench_a, sum(get_score(p) for p in a_field)))
+        rot_b.append((b_field, bench_b, sum(get_score(p) for p in b_field)))
+    return rot_a, rot_b
+
+
 def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=False):
     """
     참여자 리스트를 받아 메인팀/스페어팀 로테이션 데이터를 반환.
@@ -1065,38 +1165,14 @@ def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=Fals
                 best_diff, best_a, best_b = diff, a[:], b[:]
         return best_a, best_b
 
-    def make_odd_rotation(base_a, base_b):
-        GAME_TYPES = ['B','B','W','B','W','B','W','B']
-        rot_black = make_fixed_team_rotation(base_a, GAME_TYPES.count('B'), 1)
-        rot_white = make_fixed_team_rotation(base_b, GAME_TYPES.count('W'), 1)
-        rot_a, rot_b = [], []
-        bi = wi = 0
-        temp = None
-        for gt in GAME_TYPES:
-            if gt == 'B':
-                act_a, bench_a, _ = rot_black[bi]; bi += 1
-                act_b = list(base_b); bench_b = []
-                temp = bench_a[0] if bench_a else None
-            else:
-                act_b_r, bench_b, _ = rot_white[wi]; wi += 1
-                if temp and temp not in act_b_r:
-                    act_b = list(act_b_r) + [temp]
-                    act_a = [p for p in base_a if p != temp]
-                else:
-                    act_b = list(act_b_r); act_a = list(base_a)
-                bench_a = []
-            rot_a.append((act_a, bench_a, sum(get_score(p) for p in act_a)))
-            rot_b.append((act_b, bench_b, sum(get_score(p) for p in act_b)))
-        return rot_a, rot_b
-
     fs = fixed_same or []
     fd = fixed_diff or []
 
-    # 7:7 모드는 인원 홀짝 관계없이 팀 반반 + 벤치 로테이션(짝수 로직)으로 처리
-    if n % 2 == 1 and not use_7v7:
+    if n % 2 == 1:
+        # 홀수: 큰팀/작은팀으로 나누고 교차 로테이션으로 매 경기 team_size:team_size 유지
         a_size = (n + 1) // 2
         base_a, base_b = find_best(a_size, fixed_same=fs, fixed_diff=fd)
-        rot_a, rot_b = make_odd_rotation(base_a, base_b)
+        rot_a, rot_b = make_odd_rotation(base_a, base_b, team_size, NUM_GAMES)
         spare = None
     else:
         size = n // 2                       # 홀수면 큰 팀이 1명 더 (벤치 로테이션으로 흡수)
@@ -1145,11 +1221,11 @@ def main():
     NUM_GAMES = 8
 
     if n % 2 == 1:
-        # ── 홀수(13명): 블랙 7명 vs 화이트 6명, 블랙/화이트 교대 벤치 ──
-        team_a_size = (n + 1) // 2  # 7
-        team_b_size = n // 2        # 6
+        # ── 홀수: 블랙 ⌈n/2⌉ / 화이트 ⌊n/2⌋, 교차 로테이션으로 매 경기 team_size:team_size ──
+        team_a_size = (n + 1) // 2
+        team_b_size = n // 2
         print(f"게임 형식: {team_size}:{team_size}  블랙 {team_a_size}명 / 화이트 {team_b_size}명  경기 수: {NUM_GAMES}경기")
-        print(f"※ 홀수 인원: 블랙팀에서 먼저 1명씩 벤치, 이후 화이트팀과 교대 로테이션")
+        print(f"※ 홀수 인원: 매 경기 {team_size}:{team_size} 유지 — 기본경기(블랙 더 벤치)와 교차경기(블랙 1명 임시 화이트)를 섞어 전원 골고루 휴식")
         print()
 
         print("🔍 메인팀 탐색 중...")
@@ -1160,61 +1236,18 @@ def main():
             random.shuffle(shuffled)
             ta = shuffled[:team_a_size]
             tb = shuffled[team_a_size:]
-            # 7명팀 출전 6명 최적 점수 ≈ 화이트 6명 점수
+            # 블랙(큰팀) 출전 team_size명 추정 점수 ≈ 화이트(작은팀) 출전 team_size명 점수
             avg_active_a = sum(get_score(p) for p in ta) * team_size / team_a_size
-            diff = abs(avg_active_a - sum(get_score(p) for p in tb))
+            avg_active_b = sum(get_score(p) for p in tb) * team_size / team_b_size
+            diff = abs(avg_active_a - avg_active_b)
             if diff < best_team_score:
                 best_team_score = diff
                 best_team_a, best_team_b = ta[:], tb[:]
 
-        base_a = best_team_a  # 블랙 7명
-        base_b = best_team_b  # 화이트 6명
+        base_a = best_team_a  # 블랙 (큰팀)
+        base_b = best_team_b  # 화이트 (작은팀)
 
-        # ── 홀수 벤치 로테이션 생성 ──────────────────────────────
-        # 패턴: B,B,W,B,W,B,W,B
-        #
-        # 1경기(B): G벤치        → 블랙A~F      vs 화이트H~M
-        # 2경기(B): A벤치        → 블랙B~G      vs 화이트H~M       (G복귀)
-        # 3경기(W): H벤치,A→화이트 → 블랙B~G    vs 화이트A,I~M
-        # 4경기(B): B벤치 A복귀H복귀 → 블랙A,C~G vs 화이트H~M
-        # 5경기(W): I벤치,B→화이트 → 블랙A,C~G  vs 화이트B,H,J~M
-        # 6경기(B): C벤치 B복귀I복귀 → 블랙A,B,D~G vs 화이트H~M
-        # 7경기(W): J벤치,C→화이트 → 블랙A,B,D~G vs 화이트C,H,I,K~M
-        # 8경기(B): D벤치 C복귀J복귀 → 블랙A~C,E~G vs 화이트H~M
-
-        GAME_TYPES = ['B','B','W','B','W','B','W','B']
-        n_b = GAME_TYPES.count('B')  # 5
-        n_w = GAME_TYPES.count('W')  # 3
-
-        rot_black = make_fixed_team_rotation(base_a, n_b, 1)
-        rot_white = make_fixed_team_rotation(base_b, n_w, 1)
-
-        rot_a_full, rot_b_full = [], []
-        bi, wi = 0, 0
-        temp_in_white = None  # 현재 화이트에 임시 투입된 블랙 선수
-
-        for g in range(NUM_GAMES):
-            gtype = GAME_TYPES[g]
-            if gtype == 'B':
-                # 블랙 1명 벤치, 화이트 전원 복귀(temp 해제)
-                act_a, bench_a, _ = rot_black[bi]; bi += 1
-                active_a = list(act_a)
-                active_b = list(base_b)  # 화이트 고정 6명 전원
-                bench_b  = []
-                temp_in_white = bench_a[0] if bench_a else None
-            else:
-                # 화이트 1명 벤치, 직전 블랙벤치→화이트 임시 투입, 블랙에서 제외
-                act_b, bench_b, _ = rot_white[wi]; wi += 1
-                if temp_in_white and temp_in_white not in act_b:
-                    active_b = list(act_b) + [temp_in_white]
-                    active_a = [p for p in base_a if p != temp_in_white]
-                else:
-                    active_b = list(act_b)
-                    active_a = list(base_a)
-                bench_a = []
-
-            rot_a_full.append((active_a, bench_a, sum(get_score(p) for p in active_a)))
-            rot_b_full.append((active_b, bench_b, sum(get_score(p) for p in active_b)))
+        rot_a_full, rot_b_full = make_odd_rotation(base_a, base_b, team_size, NUM_GAMES)
 
         print()
         print_game_schedule(base_a, base_b, rot_a_full, rot_b_full, ideal, NUM_GAMES, "⚽ 메인팀")
