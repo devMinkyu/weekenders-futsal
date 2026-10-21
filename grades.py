@@ -24,6 +24,12 @@ ABILITY_SCORE = {"A": 4, "B": 3, "C": 2, "D": 1}
 
 MERCENARY_GRADE = "B"  # 미등록 선수·빠진 항목 기본 등급
 
+# 선출(선수 출신): 능력치 등급과 무관하게 합산점수 고정
+SEONCHUL_SCORE = 40
+SEONCHUL_PLAYERS = [
+    # "홍길동",
+]
+
 GRADES_FILE = Path(__file__).parent / "grades.json"
 
 
@@ -40,9 +46,15 @@ def _load_abilities() -> dict:
 PLAYER_ABILITIES = _load_abilities()
 
 
+def is_seonchul(name: str) -> bool:
+    return name in SEONCHUL_PLAYERS
+
+
 def player_score(name: str) -> int:
     """ABILITY_KEYS 기준으로 세부 등급을 합산해 점수를 계산.
-    미등록 선수나 빠진 항목은 MERCENARY_GRADE(B) 로 간주."""
+    선출은 고정 SEONCHUL_SCORE. 미등록 선수·빠진 항목은 MERCENARY_GRADE(B) 로 간주."""
+    if is_seonchul(name):
+        return SEONCHUL_SCORE
     abilities = PLAYER_ABILITIES.get(name, {})
     default = ABILITY_SCORE[MERCENARY_GRADE]
     return sum(ABILITY_SCORE.get(abilities.get(key), default) for key in ABILITY_KEYS)
