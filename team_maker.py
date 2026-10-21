@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from grades import PLAYER_ABILITIES, MERCENARY_GRADE, player_score, ABILITY_KEYS
 from members import MEMBERS
-from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEAL_POSITIONS_6
+from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEAL_POSITIONS_6, IDEAL_POSITIONS_7
 
 
 # ─────────────────────────────────────────
@@ -16,6 +16,10 @@ from positions import PLAYER_POSITIONS, IDEAL_POSITIONS, IDEAL_POSITIONS_5, IDEA
 
 def is_mercenary(name):
     return name not in PLAYER_ABILITIES
+
+
+class NotEnoughPlayersError(Exception):
+    """인원이 모자라 팀을 구성할 수 없음."""
 
 
 class AmbiguousNameError(Exception):
@@ -398,18 +402,23 @@ def assign_positions(field, ideal_positions, pos_counts=None):
       R5. 남은 ideal 자리 — 적게 한 포지션 우선 (CB 순환 핵심)
       R6. 미등록 선수 → 남은 자리
     """
+    from collections import Counter as _Counter
     assigned = {}
-    taken = set()
+    taken = _Counter()                      # 포지션별 채워진 수 (CM 2개 등 중복 지원)
+    cap = _Counter(ideal_positions)         # 포지션별 정원 (ideal 에 CM 2개면 cap[CM]=2)
     if pos_counts is None:
         pos_counts = {}
 
     def cnt(p, pos):
         return pos_counts.get(p, {}).get(pos, 0)
 
+    def _has_room(pos):
+        return pos and taken[pos] < cap[pos]
+
     def try_assign(p, pos):
-        if pos and pos not in taken and pos in ideal_positions:
+        if _has_room(pos):
             assigned[p] = pos
-            taken.add(pos)
+            taken[pos] += 1
             return True
         return False
 
@@ -448,7 +457,7 @@ def assign_positions(field, ideal_positions, pos_counts=None):
         pos1, _ = get_positions(p)
         found = False
         for a in alt(pos1):
-            if a not in taken and a in ideal_positions:
+            if _has_room(a):
                 alt_r3.setdefault(a, []).append(p)
                 found = True
                 break
@@ -468,7 +477,7 @@ def assign_positions(field, ideal_positions, pos_counts=None):
         _, pos2 = get_positions(p)
         found = False
         for a in alt(pos2):
-            if a not in taken and a in ideal_positions:
+            if _has_room(a):
                 alt_r4.setdefault(a, []).append(p)
                 found = True
                 break
@@ -483,7 +492,7 @@ def assign_positions(field, ideal_positions, pos_counts=None):
 
     # R5: 등록 선수 — 적게 한 포지션 우선 (CB 자동 순환)
     for p in r5:
-        available = [pos for pos in ideal_positions if pos not in taken]
+        available = [pos for pos in dict.fromkeys(ideal_positions) if _has_room(pos)]
         if available:
             best = min(available, key=lambda pos: cnt(p, pos))
             try_assign(p, best)
@@ -492,7 +501,7 @@ def assign_positions(field, ideal_positions, pos_counts=None):
 
     # R6: 미등록 선수 — 남은 자리
     for p in unregistered:
-        available = [pos for pos in ideal_positions if pos not in taken]
+        available = [pos for pos in dict.fromkeys(ideal_positions) if _has_room(pos)]
         if available:
             best = min(available, key=lambda pos: cnt(p, pos))
             try_assign(p, best)
@@ -854,12 +863,23 @@ def build_external_rotation(players):
     """
     import math
     n = len(players)
-    TEAM_SIZE = 6
     NUM_GAMES = 8
-    ideal = IDEAL_POSITIONS_6
+
+    if n < 5:
+        raise NotEnoughPlayersError(
+            f"외부 매칭은 최소 5명부터 가능해요. (현재 {n}명)"
+        )
+
+    # 5명이면 5:5(CM 없음), 6명 이상이면 6:6
+    if n == 5:
+        TEAM_SIZE = 5
+        ideal = IDEAL_POSITIONS_5
+    else:
+        TEAM_SIZE = 6
+        ideal = IDEAL_POSITIONS_6
 
     if n <= TEAM_SIZE:
-        # 6명 이하면 벤치 없이 전원 출전
+        # 출전 인원과 같거나 적으면 벤치 없이 전원 출전
         rot = [(list(players), [], sum(get_score(p) for p in players))] * NUM_GAMES
         return {'mode': 'external', 'n': n, 'ideal': ideal, 'players': players, 'rotation': rot}
 
@@ -985,9 +1005,10 @@ def build_small_self(players, tries=3000):
     return {'mode': 'small_self', 'team_a': best_a, 'team_b': best_b}
 
 
-def build_rotation(players, fixed_same=None, fixed_diff=None):
+def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=False):
     """
     참여자 리스트를 받아 메인팀/스페어팀 로테이션 데이터를 반환.
+    seven_v_seven: 14명 자체전일 때 7:7(벤치 0)로 진행
     반환: {
         'n': 인원수, 'team_size': 팀크기, 'ideal': 포지션목록,
         'main': {'base_a', 'base_b', 'rot_a', 'rot_b'},
@@ -995,8 +1016,14 @@ def build_rotation(players, fixed_same=None, fixed_diff=None):
     }
     """
     n = len(players)
-    team_size, _ = determine_format(n)
-    ideal = IDEAL_POSITIONS_6 if team_size >= 6 else IDEAL_POSITIONS_5
+    # 14명 이상 + 7:7 플래그: 경기당 팀 7명 출전(초과 인원은 벤치 로테이션), CM 2명 포지션
+    use_7v7 = seven_v_seven and n >= 14
+    if use_7v7:
+        team_size = 7
+        ideal = IDEAL_POSITIONS_7
+    else:
+        team_size, _ = determine_format(n)
+        ideal = IDEAL_POSITIONS_6 if team_size >= 6 else IDEAL_POSITIONS_5
     NUM_GAMES = 8
 
     def find_best(size, tries=3000, fixed_same=None, fixed_diff=None):
@@ -1065,20 +1092,23 @@ def build_rotation(players, fixed_same=None, fixed_diff=None):
     fs = fixed_same or []
     fd = fixed_diff or []
 
-    if n % 2 == 1:
+    # 7:7 모드는 인원 홀짝 관계없이 팀 반반 + 벤치 로테이션(짝수 로직)으로 처리
+    if n % 2 == 1 and not use_7v7:
         a_size = (n + 1) // 2
         base_a, base_b = find_best(a_size, fixed_same=fs, fixed_diff=fd)
         rot_a, rot_b = make_odd_rotation(base_a, base_b)
         spare = None
     else:
-        size = n // 2
-        bench = size - team_size
-        base_a, base_b = find_best(size, fixed_same=fs, fixed_diff=fd)
-        rot_a = make_fixed_team_rotation(base_a, NUM_GAMES, bench)
-        rot_b = make_fixed_team_rotation(base_b, NUM_GAMES, bench)
-        sp_a, sp_b = find_best(size, fixed_same=fs, fixed_diff=fd)
-        sp_rot_a = make_fixed_team_rotation(sp_a, NUM_GAMES, bench)
-        sp_rot_b = make_fixed_team_rotation(sp_b, NUM_GAMES, bench)
+        size = n // 2                       # 홀수면 큰 팀이 1명 더 (벤치 로테이션으로 흡수)
+        a_size = n - size                   # 블랙 = 나머지(홀수일 때 +1)
+        bench_a = a_size - team_size        # 블랙 팀 벤치 수
+        bench_b = size - team_size          # 화이트 팀 벤치 수
+        base_a, base_b = find_best(a_size, fixed_same=fs, fixed_diff=fd)
+        rot_a = make_fixed_team_rotation(base_a, NUM_GAMES, bench_a)
+        rot_b = make_fixed_team_rotation(base_b, NUM_GAMES, bench_b)
+        sp_a, sp_b = find_best(a_size, fixed_same=fs, fixed_diff=fd)
+        sp_rot_a = make_fixed_team_rotation(sp_a, NUM_GAMES, bench_a)
+        sp_rot_b = make_fixed_team_rotation(sp_b, NUM_GAMES, bench_b)
         spare = {'base_a': sp_a, 'base_b': sp_b, 'rot_a': sp_rot_a, 'rot_b': sp_rot_b}
 
     return {

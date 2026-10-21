@@ -11,25 +11,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from team_maker import (
     MEMBERS, determine_format, get_score, get_grade, get_positions,
     assign_all_cases, build_rotation, build_external_rotation, build_small_self,
-    resolve_names, resolve_name, AmbiguousNameError,
+    resolve_names, resolve_name, AmbiguousNameError, NotEnoughPlayersError,
 )
 try:
     from members import GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM
 except ImportError:
     GAME_MODE, FIXED_SAME_TEAM, FIXED_DIFF_TEAM = "auto", [], []
+try:
+    from members import SEVEN_V_SEVEN
+except ImportError:
+    SEVEN_V_SEVEN = False
 
-# ── 포지션 좌표 (SVG 300×460 기준) ───────────────────────────
+# ── 포지션 좌표 (SVG 350×540 기준) ───────────────────────────
 POS_XY_5 = {"GK":(175,490),"LB":(65,360),"CB":(175,360),"RB":(285,360),"ST":(175,170)}
 POS_XY_6 = {"GK":(175,490),"LB":(65,375),"CB":(175,375),"RB":(285,375),"CM":(175,255),"ST":(175,135)}
+# 7인제: CM 2명 → 중앙 좌/우로 분배. 같은 포지션 다중 좌표는 리스트로.
+POS_XY_7 = {"GK":(175,495),"LB":(65,385),"CB":(175,385),"RB":(285,385),
+            "CM":[(110,260),(240,260)],"ST":(175,130)}
 
 _svg_counter = [0]
 
-def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
+def svg_court(pos_map, team="black", court="6", bench_players=None):
+    """
+    pos_map: {포지션: 선수} 또는 {포지션: [선수1, 선수2]} (CM 2명 등 중복 포지션)
+    court: "5" / "6" / "7"  (좌표셋 선택)
+    """
     _svg_counter[0] += 1
     gid = f"grass{_svg_counter[0]}"  # 각 SVG마다 고유 gradient id
 
     W, H = 350, 540
-    pos_xy = POS_XY_6 if is_6v6 else POS_XY_5
+    pos_xy = {"5": POS_XY_5, "6": POS_XY_6, "7": POS_XY_7}.get(str(court), POS_XY_6)
     fill   = "#1e1e1e" if team == "black" else "#f5f5f5"
     text   = "#ffffff" if team == "black" else "#111111"
     stroke = "#555"    if team == "black" else "#bbb"
@@ -60,11 +71,17 @@ def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
     <rect x="{W//2-70}" y="14" width="140" height="62"/>
   </g>'''
 
-    for pos, name in pos_map.items():
-        if not name or pos not in pos_xy:
+    for pos, val in pos_map.items():
+        if not val or pos not in pos_xy:
             continue
-        x, y = pos_xy[pos]
-        svg += f'''
+        names = val if isinstance(val, list) else [val]
+        coords = pos_xy[pos]
+        coord_list = coords if isinstance(coords, list) else [coords]
+        for i, name in enumerate(names):
+            if not name:
+                continue
+            x, y = coord_list[i] if i < len(coord_list) else coord_list[-1]
+            svg += f'''
   <g transform="translate({x},{y})" class="player-node" data-player="{name}" style="cursor:pointer">
     <circle r="30" fill="{fill}" stroke="{stroke}" stroke-width="2.5"/>
     <text y="-6" text-anchor="middle" fill="{text}" font-size="14" font-weight="700"
@@ -77,6 +94,33 @@ def svg_court(pos_map, team="black", is_6v6=False, bench_players=None):
     svg += '\n</svg>'
     return svg
 
+
+def court_of(ideal):
+    """ideal 포지션 리스트 → 코트 좌표셋 키 ('5'/'6'/'7')"""
+    if "CM" not in ideal:
+        return "5"
+    return "7" if ideal.count("CM") >= 2 else "6"
+
+
+def build_pos_map(gk, pm, field_pos):
+    """
+    {포지션: 선수 or [선수들]} 형태로 변환 (CM 2개 등 중복 포지션 지원).
+    pm: {선수: 포지션}, field_pos: ideal 포지션 리스트(중복 포함).
+    """
+    # 포지션별 선수 모으기
+    by_pos = {}
+    for player, pos in pm.items():
+        if player:
+            by_pos.setdefault(pos, []).append(player)
+    result = {"GK": gk}
+    for pos in dict.fromkeys(field_pos):           # 중복 제거한 포지션 종류
+        players_here = by_pos.get(pos, [])
+        if field_pos.count(pos) >= 2:              # CM 2개 등 → 리스트로
+            result[pos] = players_here
+        else:
+            result[pos] = players_here[0] if players_here else ''
+    return result
+
 # ── 데이터를 JSON으로 직렬화 ──────────────────────────────────
 def build_section_data(team_a, team_b, rot_a, rot_b, ideal, num_games):
     seen = []
@@ -84,7 +128,7 @@ def build_section_data(team_a, team_b, rot_a, rot_b, ideal, num_games):
         if p not in seen:
             seen.append(p)
     field_pos = seen
-    is_6v6 = "CM" in field_pos
+    court = court_of(ideal)
     gk_order_a = list(team_a)
     gk_order_b = list(team_b)
 
@@ -136,12 +180,12 @@ def build_section_data(team_a, team_b, rot_a, rot_b, ideal, num_games):
             svg_a, svg_b = "", ""
             if idx < len(cases_a):
                 gk, pm = cases_a[idx]
-                pm_full = {"GK": gk, **{pos: next((p for p,v in pm.items() if v==pos), '') for pos in field_pos}}
-                svg_a = svg_court(pm_full, "black", is_6v6, bench_a if bench_a else None)
+                pm_full = build_pos_map(gk, pm, ideal)
+                svg_a = svg_court(pm_full, "black", court, bench_a if bench_a else None)
             if idx < len(cases_b):
                 gk, pm = cases_b[idx]
-                pm_full = {"GK": gk, **{pos: next((p for p,v in pm.items() if v==pos), '') for pos in field_pos}}
-                svg_b = svg_court(pm_full, "white", is_6v6, bench_b if bench_b else None)
+                pm_full = build_pos_map(gk, pm, ideal)
+                svg_b = svg_court(pm_full, "white", court, bench_b if bench_b else None)
             cases_svg.append({"black": svg_a, "white": svg_b})
 
         # 선수별 케이스별 포지션 배열 (모달용)
@@ -216,7 +260,7 @@ def build_external_section(ext):
         if p not in seen:
             seen.append(p)
     field_pos = seen
-    is_6v6 = "CM" in field_pos
+    court = court_of(ideal)
 
     prev_order = list(players)
     games = []
@@ -251,8 +295,8 @@ def build_external_section(ext):
         player_team  = {p: '' for p in player_pos}
         player_guest = {}
         for gk, pm in cases:
-            pm_full = {"GK": gk, **{pos: next((p for p,v in pm.items() if v==pos), '') for pos in field_pos}}
-            svg = svg_court(pm_full, "black", is_6v6, bench if bench else None)
+            pm_full = build_pos_map(gk, pm, ideal)
+            svg = svg_court(pm_full, "black", court, bench if bench else None)
             cases_svg.append({"svg": svg, "gk": gk})
         games.append({
             "bench": ', '.join(bench) if bench else '-',
@@ -277,18 +321,38 @@ def build_external_section(ext):
     }
 
 
+def update_members_file(members):
+    """members.py 의 MEMBERS 리스트만 교체 (GAME_MODE·FIXED 등 다른 설정은 보존)."""
+    import re
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "members.py")
+    src = open(path, encoding="utf-8").read()
+    body = "MEMBERS = [\n" + "".join(f'    "{m}",\n' for m in members) + "]"
+    # 기존 MEMBERS = [ ... ] 블록을 통째로 교체
+    new_src, cnt = re.subn(r"MEMBERS\s*=\s*\[.*?\]", body, src, count=1, flags=re.S)
+    if cnt == 0:
+        new_src = src.rstrip() + "\n\n" + body + "\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_src)
+
+
 # ── HTML 생성 ─────────────────────────────────────────────────
-def generate_html(players=None, game_mode=None, open_browser=True):
+def generate_html(players=None, game_mode=None, open_browser=True, save_members=False):
     """
     players: 참석자 리스트 (None이면 members.py의 MEMBERS 사용)
     game_mode: "auto"/"match"/"self" 또는 Mode Enum (None이면 members.py의 GAME_MODE 사용)
     open_browser: 생성 후 브라우저 자동 오픈 여부
+    save_members: True면 보정된 참석자로 members.py의 MEMBERS 를 덮어씀 (봇용)
     반환: 생성된 index.html 절대경로
     """
-    players = list(players) if players is not None else list(MEMBERS)
+    players_given = players is not None
+    players = list(players) if players_given else list(MEMBERS)
     # 참석자 이름 보정 (민규 → 김민규). 모호하면 AmbiguousNameError 발생 → 중단
     players = resolve_names(players)
     n = len(players)
+
+    # 봇에서 참석자를 받은 경우, members.py 를 보정된 명단으로 최신화
+    if save_members and players_given:
+        update_members_file(players)
 
     # 팀 고정 조건(FIXED)의 이름도 참석자 기준으로 보정 (현욱 → 박현욱)
     # 참석자 명단 안에서만 매칭 — 이번 경기에 없는 선수는 그대로 두고 build_rotation 이 무시
@@ -355,7 +419,8 @@ def generate_html(players=None, game_mode=None, open_browser=True):
         except ValueError as e:
             print(f"❌ {e}"); return
 
-        result = build_rotation(players, fixed_same=fixed_same, fixed_diff=fixed_diff)
+        result = build_rotation(players, fixed_same=fixed_same, fixed_diff=fixed_diff,
+                                seven_v_seven=SEVEN_V_SEVEN)
         ideal     = result['ideal']
         NUM_GAMES = result['num_games']
         team_size = result['team_size']

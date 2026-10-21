@@ -34,8 +34,10 @@ PLAYER_POSITIONS = _load_positions()
 # 인원수별 이상적인 필드 포지션 구성 (GK 제외)
 # 5인제: GK 1명 + 필드 4명 → CM 없이 운영
 # 6인제: GK 1명 + 필드 5명 → CM 포함
-IDEAL_POSITIONS_5 = ["ST", "RB", "LB", "CB"]         # 5인제 (GK 제외 4자리, CM 없음)
-IDEAL_POSITIONS_6 = ["ST", "CM", "RB", "LB", "CB"]   # 6인제 (GK 제외 5자리)
+# 7인제: GK 1명 + 필드 6명 → CM 2명 (중앙 좌/우), 14명 자체전 7:7 전용
+IDEAL_POSITIONS_5 = ["ST", "RB", "LB", "CB"]              # 5인제 (GK 제외 4자리, CM 없음)
+IDEAL_POSITIONS_6 = ["ST", "CM", "RB", "LB", "CB"]        # 6인제 (GK 제외 5자리)
+IDEAL_POSITIONS_7 = ["ST", "CM", "CM", "RB", "LB", "CB"]  # 7인제 (GK 제외 6자리, CM 2명)
 
 # 하위 호환
 IDEAL_POSITIONS = IDEAL_POSITIONS_5
