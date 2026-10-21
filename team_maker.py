@@ -1139,7 +1139,9 @@ def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=Fals
 
     def find_best(size, tries=3000, fixed_same=None, fixed_diff=None):
         """
-        fixed_same: 같은 팀으로 묶을 선수 리스트 (a팀 또는 b팀 어디든 같이)
+        fixed_same: 같은 팀으로 묶을 묶음(그룹)들의 리스트. 각 묶음(튜플/리스트)은
+                    통째로 한 팀에 있어야 하며, 서로 다른 묶음끼리는 다른 팀이어도 됨.
+                    예) [("박현욱","박현성"), ("김민규","김기항")]
         fixed_diff: 다른 팀으로 분리할 (p1, p2) 튜플 리스트
         """
         fixed_same = fixed_same or []
@@ -1151,15 +1153,19 @@ def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=Fals
             a, b = s[:size], s[size:]
             set_a, set_b = set(a), set(b)
 
-            # FIXED_SAME_TEAM: 모두 같은 팀에 있어야 함
-            if fixed_same:
-                in_a = [p for p in fixed_same if p in set_a]
-                in_b = [p for p in fixed_same if p in set_b]
-                if in_a and in_b:  # 양 팀에 분산 → 버림
-                    continue
+            # FIXED_SAME_TEAM: 각 묶음은 통째로 한 팀에 있어야 함 (묶음끼리는 분리 가능)
+            skip = False
+            for group in fixed_same:
+                members = [group] if isinstance(group, str) else list(group)
+                in_a = any(p in set_a for p in members)
+                in_b = any(p in set_b for p in members)
+                if in_a and in_b:  # 한 묶음이 양 팀으로 쪼개짐 → 버림
+                    skip = True
+                    break
+            if skip:
+                continue
 
             # FIXED_DIFF_TEAM: 각 쌍이 다른 팀에 있어야 함
-            skip = False
             for p1, p2 in fixed_diff:
                 if (p1 in set_a and p2 in set_a) or (p1 in set_b and p2 in set_b):
                     skip = True
@@ -1174,6 +1180,12 @@ def build_rotation(players, fixed_same=None, fixed_diff=None, seven_v_seven=Fals
                 diff = abs(sum(get_score(p) for p in a) - sum(get_score(p) for p in b))
             if diff < best_diff:
                 best_diff, best_a, best_b = diff, a[:], b[:]
+        if best_a is None:
+            raise ValueError(
+                "같은팀/다른팀 고정 조건을 모두 만족하는 팀 구성을 찾지 못했어요.\n"
+                "→ 조건이 서로 모순되지 않는지 확인해주세요 "
+                "(예: 같은 쌍을 FIXED_SAME_TEAM 과 FIXED_DIFF_TEAM 에 동시에 지정)."
+            )
         return best_a, best_b
 
     fs = fixed_same or []
