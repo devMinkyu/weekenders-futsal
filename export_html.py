@@ -350,10 +350,6 @@ def generate_html(players=None, game_mode=None, open_browser=True, save_members=
     players = resolve_names(players)
     n = len(players)
 
-    # 봇에서 참석자를 받은 경우, members.py 를 보정된 명단으로 최신화
-    if save_members and players_given:
-        update_members_file(players)
-
     # 팀 고정 조건(FIXED)의 이름도 참석자 기준으로 보정 (현욱 → 박현욱)
     # 참석자 명단 안에서만 매칭 — 이번 경기에 없는 선수는 그대로 두고 build_rotation 이 무시
     def _resolve_pairs(pairs):
@@ -1049,6 +1045,9 @@ document.addEventListener('click', function(e) {{
 </body>
 </html>'''
 
+    # 모든 검증·계산이 끝난 뒤에만 파일을 쓴다 (실패 시 members.py / index.html 모두 그대로)
+    if save_members and players_given:
+        update_members_file(players)  # 봇에서 받은 참석자 명단을 members.py 에 반영
     out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
